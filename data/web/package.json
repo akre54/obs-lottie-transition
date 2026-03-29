@@ -1,0 +1,11 @@
+{
+  "name": "obs-lottie-transition-web",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "lottie-web": "5.12.2"
+  },
+  "scripts": {
+    "setup": "cp node_modules/lottie-web/build/player/lottie.min.js ."
+  }
+}
