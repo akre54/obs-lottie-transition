@@ -7,17 +7,19 @@ OBS plugin that uses Lottie animations to drive scene transitions. A private CEF
 ## Architecture
 
 - **C plugin** (`src/lottie-transition.c/h`) — OBS_SOURCE_TYPE_TRANSITION, manages browser source lifecycle, GPU rendering pipeline
-- **Bridge JS** (`data/web/bridge.js`) — Self-driving animation renderer. Loads lottie data, auto-plays via requestAnimationFrame, renders 3 regions + data strip
-- **Shader** (`data/lottie_transition.effect`) — HLSL matte compositing (scene_a * matte_a + scene_b * matte_b + overlay)
+- **Bridge JS** (`data/web/bridge.js`) — Self-driving animation renderer. Loads lottie data, auto-plays via requestAnimationFrame, channel-packs mattes into single canvas
+- **Shader** (`data/lottie_transition.effect`) — HLSL matte compositing from channel-packed browser texture
 - **Transform decode** (`src/transform-decode.c/h`) — Pixel data strip → float transform extraction
 
-## Browser Canvas Layout
+## Channel-Packing (Browser Canvas Layout)
 
-Canvas = outputHeight × 3 + 2 (DATA_STRIP_HEIGHT)
-- Region 0: MatteA (white = show scene A)
-- Region 1: MatteB (white = show scene B)
-- Region 2: Overlay/decorative elements
-- Bottom 2px: Data strip encoding transform floats as RGBA pixels
+Single 1920x1080 canvas with channel-packed data:
+- **R channel** = MatteA luminance (white = show scene A)
+- **G channel** = MatteB luminance (white = show scene B)
+- **B channel** = Overlay alpha (blend factor for white overlay)
+- **A channel** = Always 255 (browser composites away alpha=0 pixels)
+
+Three off-screen lottie instances render separately, then `getImageData`/`putImageData` packs the channels. Previous approach of stacking 3 regions vertically failed because the browser source only renders the viewport height and stretches it.
 
 ## Build / Install / Test
 
@@ -52,6 +54,8 @@ These are hard-won findings from extensive debugging. **Do not re-attempt failed
 - **Raw unencoded `data:text/html,` with `#` or `%` chars** — `#` acts as URL fragment delimiter (truncates content). `%` triggers percent-decode (corrupts content). These chars MUST be encoded.
 - **`obs_source_add_active_child()`** — Doesn't propagate activation when parent transition isn't active
 - **`lottie.loadAnimation({ rendererSettings: { canvas: myCanvas } })` with a container** — lottie-web ignores the `canvas` param when a container is also provided. It creates its own canvas inside the container. Must grab the actual canvas via `animInstance.renderer.canvasContext.canvas` after DOMLoaded. Also, the container MUST have real dimensions (not `width:0;height:0`) or lottie's canvas will be 0x0.
+- **Tall canvas (e.g. 1920x3242) for multi-region rendering** — The browser source renders only the viewport-height portion of the page content and stretches/scales it to fill the configured `height`. A canvas taller than the viewport results in only the top viewport-height pixels being captured, repeated across the full texture. Use channel-packing into a single viewport-sized canvas instead.
+- **Canvas pixels with alpha=0** — The browser source composites away fully transparent pixels. Even if R/G/B contain data, setting A=0 causes the browser to output black/transparent. Always set alpha=255 when encoding data into canvas pixels.
 
 ### Resolved: Large JS Payload Loading
 
