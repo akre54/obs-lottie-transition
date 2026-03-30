@@ -7,37 +7,8 @@
 
 OBS_DECLARE_MODULE()
 
-/* Minimal base64 encoder */
-static const char b64_table[] =
-	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static void base64_encode(struct dstr *out, const uint8_t *data, size_t len)
-{
-	size_t out_len = 4 * ((len + 2) / 3);
-	dstr_ensure_capacity(out, out->len + out_len + 1);
-
-	size_t i;
-	for (i = 0; i + 2 < len; i += 3) {
-		uint32_t v = ((uint32_t)data[i] << 16) |
-			     ((uint32_t)data[i+1] << 8) |
-			     (uint32_t)data[i+2];
-		dstr_catf(out, "%c%c%c%c",
-			  b64_table[(v >> 18) & 0x3F],
-			  b64_table[(v >> 12) & 0x3F],
-			  b64_table[(v >> 6) & 0x3F],
-			  b64_table[v & 0x3F]);
-	}
-	if (i < len) {
-		uint32_t v = (uint32_t)data[i] << 16;
-		if (i + 1 < len) v |= (uint32_t)data[i+1] << 8;
-		dstr_catf(out, "%c%c", b64_table[(v >> 18) & 0x3F],
-			  b64_table[(v >> 12) & 0x3F]);
-		if (i + 1 < len)
-			dstr_catf(out, "%c=", b64_table[(v >> 6) & 0x3F]);
-		else
-			dstr_cat(out, "==");
-	}
-}
+/* Temp file path for browser HTML */
+#define HTML_TEMP_PATH "/tmp/obs-lottie-transition.html"
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-lottie-transition", "en-US")
 
 #define TAG "[lottie-transition] "
@@ -45,121 +16,76 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-lottie-transition", "en-US")
 static void lt_update(void *data, obs_data_t *settings);
 
 /* ------------------------------------------------------------------ */
-/* Helper: build browser URL via temp file in /tmp                     */
+/* Helper: build HTML file for browser source (written to temp file)   */
 /* ------------------------------------------------------------------ */
 
-static void build_browser_url(struct dstr *url, struct lottie_transition *lt)
+static bool build_html_file(struct lottie_transition *lt)
 {
 	/*
-	 * CONFIRMED: data:text/html works for private browser sources,
-	 * even at 400KB+. file:// and exec_browser_js do NOT work.
-	 *
-	 * Test: Does percent-encoding inside <script> work?
-	 * Use a simple script with && (encoded as %26%26).
-	 */
-	/*
-	 * CONFIRMED: data:text/html works with raw unencoded content.
-	 * No percent-encoding needed — CEF handles &&, #, % etc. fine.
-	 * Only need to escape </ as <\/ inside <script> tags.
+	 * Strategy: keep HTML small, load JS via <script src="..."> tags.
+	 * Large inline HTML (300KB+) causes CEF to not execute JS at all.
+	 * The is_local_file setting uses http://absolute/ scheme internally,
+	 * so we copy JS files next to the HTML and use relative src paths.
 	 */
 
-	/* Read lottie.min.js */
+	/* Get paths to plugin's JS files */
 	char *lottie_path = obs_module_file("web/lottie.min.js");
-	char *lottie_js = lottie_path ? os_quick_read_utf8_file(lottie_path) : NULL;
-	bfree(lottie_path);
-	if (!lottie_js) {
-		blog(LOG_ERROR, TAG "Failed to read lottie.min.js");
-		return;
-	}
-
-	/* Read bridge.js */
 	char *bridge_path = obs_module_file("web/bridge.js");
-	char *bridge_js = bridge_path ? os_quick_read_utf8_file(bridge_path) : NULL;
+	if (!lottie_path || !bridge_path) {
+		blog(LOG_ERROR, TAG "Failed to find JS files");
+		bfree(lottie_path);
+		bfree(bridge_path);
+		return false;
+	}
+
+	/* Copy JS files to /tmp so they're next to the HTML */
+	char *lottie_js = os_quick_read_utf8_file(lottie_path);
+	char *bridge_js = os_quick_read_utf8_file(bridge_path);
+	bfree(lottie_path);
 	bfree(bridge_path);
-	if (!bridge_js) {
-		blog(LOG_ERROR, TAG "Failed to read bridge.js");
+	if (!lottie_js || !bridge_js) {
+		blog(LOG_ERROR, TAG "Failed to read JS files");
 		bfree(lottie_js);
-		return;
+		bfree(bridge_js);
+		return false;
 	}
 
-	/* Escape </ as <\/ to prevent premature </script> closure */
-	struct dstr lottie_escaped = {0};
-	struct dstr bridge_escaped = {0};
-	for (const char *p = lottie_js; *p; p++) {
-		if (p[0] == '<' && p[1] == '/')
-			{ dstr_cat(&lottie_escaped, "<\\/"); p++; }
-		else
-			dstr_catf(&lottie_escaped, "%c", *p);
-	}
+	os_quick_write_utf8_file("/tmp/obs-lottie-lottie.min.js",
+				 lottie_js, strlen(lottie_js), false);
+	os_quick_write_utf8_file("/tmp/obs-lottie-bridge.js",
+				 bridge_js, strlen(bridge_js), false);
 	bfree(lottie_js);
-
-	for (const char *p = bridge_js; *p; p++) {
-		if (p[0] == '<' && p[1] == '/')
-			{ dstr_cat(&bridge_escaped, "<\\/"); p++; }
-		else
-			dstr_catf(&bridge_escaped, "%c", *p);
-	}
 	bfree(bridge_js);
 
-	/* Read animation data */
+	/* Read animation data — this gets inlined (typically small) */
 	char *anim_json = NULL;
 	if (lt->lottie_file && *lt->lottie_file)
 		anim_json = os_quick_read_utf8_file(lt->lottie_file);
 
-	/* Build HTML first */
+	UNUSED_PARAMETER(anim_json);
+
+	/* Write a tiny external JS file */
+	os_quick_write_utf8_file("/tmp/obs-lottie-test.js",
+				 "document.body.style.background='cyan';",
+				 38, false);
+
+	/* Test: inline lime, then external cyan. Expect cyan if src works. */
 	struct dstr html = {0};
 	dstr_cat(&html,
-		"<!DOCTYPE html><html><head><meta charset='UTF-8'>"
-		"<style>*{margin:0;padding:0;overflow:hidden;background:#000}"
-		"canvas{display:block}</style></head><body>"
-		"<canvas id='lottie-canvas'></canvas>");
+		"<!DOCTYPE html><html><body>"
+		"<script>document.body.style.background='lime';</script>"
+		"<script src='obs-lottie-test.js'></script>"
+		"</body></html>");
 
-	dstr_catf(&html,
-		"<script>window._obsConfig={width:%u,height:%u,dataStripHeight:%d};</script>",
-		lt->cx, lt->cy, DATA_STRIP_HEIGHT);
+	blog(LOG_INFO, TAG "HTML size: %lu bytes (external JS, anim=%s)",
+	     (unsigned long)html.len, anim_json ? "yes" : "no");
 
-	dstr_catf(&html, "<script>%s</script>", lottie_escaped.array);
-
-	if (anim_json)
-		dstr_catf(&html, "<script>window._lottieData=%s;</script>", anim_json);
-
-	dstr_catf(&html, "<script>%s</script>", bridge_escaped.array);
-	dstr_cat(&html, "</body></html>");
-
-	blog(LOG_INFO, TAG "HTML size: %lu bytes", (unsigned long)html.len);
-
-	/* Write HTML to /tmp for debugging in regular browser */
-	os_quick_write_utf8_file("/tmp/obs-lottie-debug.html",
-				 html.array, html.len, false);
-	blog(LOG_INFO, TAG "Wrote debug HTML to /tmp/obs-lottie-debug.html");
-
-	/* Count </script in the HTML - should be exactly 4 (or 5 with anim) */
-	int script_close_count = 0;
-	for (const char *s = html.array; (s = strstr(s, "</script")); s++)
-		script_close_count++;
-	blog(LOG_INFO, TAG "Found %d </script tags in HTML", script_close_count);
-
-	/* Check for unescaped </ inside script content */
-	int slash_tag_count = 0;
-	for (const char *s = html.array; (s = strstr(s, "</")); s++)
-		slash_tag_count++;
-	blog(LOG_INFO, TAG "Found %d </ sequences total in HTML", slash_tag_count);
-
-	/* Use base64 encoding to avoid ALL character escaping issues */
-	dstr_cat(url, "data:text/html;base64,");
-	base64_encode(url, (const uint8_t *)html.array, html.len);
-
-	blog(LOG_INFO, TAG "Data URL size: %lu bytes (lottie=%lu bridge=%lu anim=%s)",
-	     (unsigned long)url->len,
-	     (unsigned long)lottie_escaped.len,
-	     (unsigned long)bridge_escaped.len,
-	     anim_json ? "yes" : "no");
+	os_quick_write_utf8_file(HTML_TEMP_PATH, html.array, html.len, false);
+	blog(LOG_INFO, TAG "Wrote HTML to %s", HTML_TEMP_PATH);
 
 	dstr_free(&html);
-
-	dstr_free(&lottie_escaped);
-	dstr_free(&bridge_escaped);
 	bfree(anim_json);
+	return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -171,26 +97,23 @@ static void create_browser_source(struct lottie_transition *lt)
 	if (lt->browser)
 		return;
 
-	struct dstr url = {0};
-	build_browser_url(&url, lt);
-
-	if (!url.array || !*url.array) {
-		blog(LOG_ERROR, TAG "Failed to build browser URL");
-		dstr_free(&url);
+	if (!build_html_file(lt)) {
+		blog(LOG_ERROR, TAG "Failed to build HTML file");
 		return;
 	}
 
 	uint32_t browser_height = lt->cy * BROWSER_REGIONS + DATA_STRIP_HEIGHT;
 
 	obs_data_t *browser_settings = obs_data_create();
-	obs_data_set_string(browser_settings, "url", url.array);
+	obs_data_set_bool(browser_settings, "is_local_file", true);
+	obs_data_set_string(browser_settings, "local_file", HTML_TEMP_PATH);
 	obs_data_set_int(browser_settings, "width", lt->cx);
 	obs_data_set_int(browser_settings, "height", browser_height);
 	obs_data_set_int(browser_settings, "fps", 60);
 	obs_data_set_bool(browser_settings, "shutdown", false);
 	obs_data_set_bool(browser_settings, "restart_when_active", false);
 
-	blog(LOG_INFO, TAG "Creating browser: size=%ux%u",
+	blog(LOG_INFO, TAG "Creating browser (is_local_file): size=%ux%u",
 	     lt->cx, browser_height);
 
 	lt->browser = obs_source_create_private("browser_source",
@@ -198,7 +121,6 @@ static void create_browser_source(struct lottie_transition *lt)
 						browser_settings);
 
 	obs_data_release(browser_settings);
-	dstr_free(&url);
 
 	if (!lt->browser) {
 		blog(LOG_ERROR, TAG "Failed to create browser source!");

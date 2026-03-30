@@ -35,6 +35,9 @@ Then restart OBS. Select "Lottie Transition" in scene transition dropdown, confi
 These are hard-won findings from extensive debugging. **Do not re-attempt failed approaches.**
 
 ### What WORKS for `obs_source_create_private("browser_source", ...)`
+- `is_local_file=true` + `local_file=/path/to.html` — **CONFIRMED WORKING** (2026-03-29). JS executes, no size limits. Uses CEF's `http://absolute/` scheme handler internally, completely different code path from `file://` URLs. This is the current approach.
+- `<script src='relative.js'>` with `is_local_file` — **CONFIRMED WORKING** (2026-03-29). Relative paths resolve against the HTML file's directory via `http://absolute/` scheme. External JS loads and executes. This avoids the large-inline-JS-in-data-URL issue.
+- Large inline HTML (300KB+) with `is_local_file` — **DOES NOT WORK**. CSS renders but JS doesn't execute, same symptom as large data: URLs. The issue is CEF-level, not URL-scheme-level.
 - `data:text/html,<small inline HTML>` — confirmed working up to ~400KB of simple content
 - `obs_source_inc_showing()` + `obs_source_inc_active()` — required for private sources to tick/render
 - Inline `<script>` tags in data: URLs execute correctly
@@ -46,19 +49,15 @@ These are hard-won findings from extensive debugging. **Do not re-attempt failed
 - **Raw unencoded `data:text/html,` with `#` or `%` chars** — `#` acts as URL fragment delimiter (truncates content). `%` triggers percent-decode (corrupts content). These chars MUST be encoded.
 - **`obs_source_add_active_child()`** — Doesn't propagate activation when parent transition isn't active
 
-### Current Blocker
-Inlining lottie.min.js (305KB) + bridge.js (8KB) + animation JSON into a data: URL. The HTML is valid (confirmed working when opened as a file in Chrome). But in a CEF data: URL:
-- Raw `data:text/html,` — broken by `#` and `%` chars in JS
-- `data:text/html,` with `#`→`%23` and `%`→`%25` encoding — page loads (opaque black bg) but JS doesn't execute
-- `data:text/html;base64,` — same result, page loads but JS doesn't execute
+### Resolved: Large JS Payload Loading
 
-Small data: URLs (<1KB) with inline JS work perfectly. The issue appears to be size-related for data: URLs containing actual JS (vs padding with `A` characters).
+**Solution**: Use `is_local_file`/`local_file` browser source settings with external `<script src>` tags. Write a small HTML file to /tmp that references JS files (lottie.min.js, bridge.js, config, anim data) via relative `<script src>` paths. The JS files are copied to the same /tmp directory. This keeps the HTML small and avoids the large-inline-JS execution failure.
 
-### Potential Next Approaches (not yet tried)
-1. **Local HTTP server** — Start a tiny HTTP server (e.g., on localhost:random_port) from the plugin, serve the HTML page. This avoids all file:// and data: URL issues.
-2. **Non-private browser source** — Use `obs_source_create()` instead of `_private()`. May fix file:// and exec_browser_js. Risk: source appears in OBS source lists, duplicate name issues.
-3. **Split the data: URL** — Use a small data: URL that dynamically creates and executes script elements via `document.createElement('script')` + `script.text = ...`, loading the large JS from a global variable set in a separate smaller data: URL.
-4. **CDN lottie-web** — Load lottie.min.js from CDN (e.g., cdnjs) via `<script src="https://...">` in the data: URL page, only inline bridge.js + animation data.
+Previous failed approaches for reference:
+
+- data: URLs with large JS (~300KB+) — CSS renders but JS doesn't execute
+- `file://` URLs — silently fail for private sources
+- `exec_browser_js` — silently dropped for private sources
 
 ## OBS API Notes
 - `gs_stagesurface_copy()` takes only 2 args (stagesurf, texture), no region
