@@ -22,72 +22,111 @@ static void lt_update(void *data, obs_data_t *settings);
 static bool build_html_file(struct lottie_transition *lt)
 {
 	/*
-	 * Strategy: keep HTML small, load JS via <script src="..."> tags.
-	 * Large inline HTML (300KB+) causes CEF to not execute JS at all.
+	 * Strategy: lottie.min.js (305KB) loaded via external <script src>,
+	 * everything else inlined. Large inline JS (300KB+) causes CEF to
+	 * not execute JS. Bridge.js is only ~8KB so safe for inline.
 	 * The is_local_file setting uses http://absolute/ scheme internally,
-	 * so we copy JS files next to the HTML and use relative src paths.
+	 * so relative src paths resolve against the HTML file's directory.
 	 */
 
-	/* Get paths to plugin's JS files */
+	/* Copy lottie.min.js to /tmp (external, too large to inline) */
 	char *lottie_path = obs_module_file("web/lottie.min.js");
-	char *bridge_path = obs_module_file("web/bridge.js");
-	if (!lottie_path || !bridge_path) {
-		blog(LOG_ERROR, TAG "Failed to find JS files");
-		bfree(lottie_path);
-		bfree(bridge_path);
+	if (!lottie_path) {
+		blog(LOG_ERROR, TAG "Failed to find lottie.min.js");
 		return false;
 	}
-
-	/* Copy JS files to /tmp so they're next to the HTML */
 	char *lottie_js = os_quick_read_utf8_file(lottie_path);
-	char *bridge_js = os_quick_read_utf8_file(bridge_path);
 	bfree(lottie_path);
-	bfree(bridge_path);
-	if (!lottie_js || !bridge_js) {
-		blog(LOG_ERROR, TAG "Failed to read JS files");
-		bfree(lottie_js);
-		bfree(bridge_js);
+	if (!lottie_js) {
+		blog(LOG_ERROR, TAG "Failed to read lottie.min.js");
 		return false;
 	}
-
 	os_quick_write_utf8_file("/tmp/obs-lottie-lottie.min.js",
 				 lottie_js, strlen(lottie_js), false);
-	os_quick_write_utf8_file("/tmp/obs-lottie-bridge.js",
-				 bridge_js, strlen(bridge_js), false);
 	bfree(lottie_js);
+
+	/* Read bridge.js for inlining (only ~8KB, safe for inline) */
+	char *bridge_path = obs_module_file("web/bridge.js");
+	char *bridge_js = bridge_path ? os_quick_read_utf8_file(bridge_path) : NULL;
+	bfree(bridge_path);
+	if (!bridge_js) {
+		blog(LOG_ERROR, TAG "Failed to read bridge.js");
+		return false;
+	}
+
+	/* Escape </ as <\/ to prevent premature </script> closure */
+	struct dstr bridge_escaped = {0};
+	for (const char *p = bridge_js; *p; p++) {
+		if (p[0] == '<' && p[1] == '/')
+			{ dstr_cat(&bridge_escaped, "<\\/"); p++; }
+		else
+			dstr_catf(&bridge_escaped, "%c", *p);
+	}
 	bfree(bridge_js);
 
-	/* Read animation data — this gets inlined (typically small) */
+	/* Read animation JSON */
 	char *anim_json = NULL;
 	if (lt->lottie_file && *lt->lottie_file)
 		anim_json = os_quick_read_utf8_file(lt->lottie_file);
 
-	/* Write anim data as external JS */
-	if (anim_json) {
-		struct dstr anim_js = {0};
-		dstr_catf(&anim_js, "window._lottieData=%s;", anim_json);
-		os_quick_write_utf8_file("/tmp/obs-lottie-anim.js",
-					 anim_js.array, anim_js.len, false);
-		dstr_free(&anim_js);
-	}
-
-	UNUSED_PARAMETER(anim_json);
-
-	/* Bisect: full HTML + lottie + bridge */
+	/* Build HTML: config inline, lottie external (async), anim inline, bridge inline.
+	 * lottie.min.js loaded with async=false defer pattern to not block parsing
+	 * but still execute before DOMContentLoaded. Bridge.js waits for lottie. */
 	struct dstr html = {0};
 	dstr_cat(&html,
 		"<!DOCTYPE html><html><head><meta charset='UTF-8'>"
 		"<style>*{margin:0;padding:0;overflow:hidden;background:#000}"
 		"canvas{display:block}</style></head><body>"
-		"<canvas id='lottie-canvas'></canvas>"
-		"<script>document.body.style.background='lime';</script>"
-		"<script src='obs-lottie-lottie.min.js'></script>"
-		"<script>document.body.style.background='cyan';</script>"
-		"<script src='obs-lottie-bridge.js'></script>"
-		"<script>document.body.style.background='magenta';</script>"
-		"</body></html>");
+		"<canvas id='lottie-canvas'></canvas>");
 
-	blog(LOG_INFO, TAG "HTML size: %lu bytes (external JS, anim=%s)",
+	/* Inline diagnostic: paint canvas lime immediately to verify JS runs */
+	dstr_catf(&html,
+		"<script>"
+		"try{"
+		"var _c=document.getElementById('lottie-canvas');"
+		"_c.width=%u;_c.height=%u;"
+		"var _x=_c.getContext('2d');"
+		"_x.fillStyle='lime';"
+		"_x.fillRect(0,0,%u,%u);"
+		"console.log('[diag] Inline JS executed, painted lime');"
+		"}catch(e){console.log('[diag] ERROR:'+e);}"
+		"</script>",
+		lt->cx, lt->cy * BROWSER_REGIONS + DATA_STRIP_HEIGHT,
+		lt->cx, lt->cy * BROWSER_REGIONS + DATA_STRIP_HEIGHT);
+
+	dstr_catf(&html,
+		"<script>window._obsConfig={width:%u,height:%u,dataStripHeight:%d};</script>",
+		lt->cx, lt->cy, DATA_STRIP_HEIGHT);
+
+	/* Load lottie.min.js dynamically — blocking <script src> kills
+	 * subsequent inline scripts in CEF private browser sources.
+	 * Bridge.js will wait for lottie to be available. */
+	if (anim_json)
+		dstr_catf(&html, "<script>window._lottieData=%s;</script>", anim_json);
+
+	dstr_cat(&html,
+		"<script>"
+		"var _s=document.createElement('script');"
+		"_s.src='obs-lottie-lottie.min.js';"
+		"_s.onload=function(){"
+		  "window._lottieReady=true;"
+		  "if(window._onLottieReady) window._onLottieReady();"
+		"};"
+		"_s.onerror=function(){"
+		  "var _c=document.getElementById('lottie-canvas');"
+		  "var _x=_c.getContext('2d');"
+		  "_x.fillStyle='rgb(255,0,128)';"
+		  "_x.fillRect(0,0,_c.width,_c.height);"
+		"};"
+		"document.head.appendChild(_s);"
+		"</script>");
+
+	dstr_catf(&html, "<script>%s</script>", bridge_escaped.array);
+	dstr_cat(&html, "</body></html>");
+
+	dstr_free(&bridge_escaped);
+
+	blog(LOG_INFO, TAG "HTML size: %lu bytes (lottie external, anim=%s)",
 	     (unsigned long)html.len, anim_json ? "yes" : "no");
 
 	os_quick_write_utf8_file(HTML_TEMP_PATH, html.array, html.len, false);
@@ -507,8 +546,15 @@ static void lt_transition_start(void *data)
 	slot_transform_identity(&lt->transform_b);
 	pthread_mutex_unlock(&lt->mutex);
 
-	if (!lt->browser)
-		create_browser_source(lt);
+	/* Destroy and recreate browser to get a fresh page load.
+	 * The restart_when_active + active toggle doesn't reliably reload
+	 * the page on subsequent transitions. Full recreate costs ~80ms
+	 * of CEF cold-start (frames 1-4 are transparent) but is reliable. */
+	obs_enter_graphics();
+	destroy_browser_source(lt);
+	obs_leave_graphics();
+	create_browser_source(lt);
+	blog(LOG_INFO, TAG "Recreated browser for transition");
 }
 
 static void lt_transition_stop(void *data)
@@ -579,7 +625,7 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 	uint32_t bw = obs_source_get_width(lt->browser);
 	uint32_t bh = obs_source_get_height(lt->browser);
 
-	if (lt->render_count <= 5) {
+	if (lt->render_count <= 20) {
 		blog(LOG_INFO, TAG "render #%d  t=%.3f  cx=%u cy=%u  "
 		     "browser=%p bw=%u bh=%u",
 		     lt->render_count, t, cx, cy,
@@ -603,37 +649,64 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 
 	gs_texture_t *tex = gs_texrender_get_texture(tr);
 
-	if (lt->render_count <= 5) {
+	if (lt->render_count <= 20) {
 		blog(LOG_INFO, TAG "render #%d: texrender_ok=%d tex=%p",
 		     lt->render_count, (int)tr_ok, (void *)tex);
 	}
 
-	/* Read back a few pixels to check if browser rendered anything */
-	if (tex && lt->render_count <= 5) {
+	/* Read back pixels to check browser state.
+	 * bridge.js paints a 20x20 status pixel at (0,0):
+	 *   Red(255,0,0)=bridge init  Yellow(255,255,0)=lottie loaded
+	 *   Cyan(0,255,255)=DOMLoaded  Magenta(255,0,255)=seekAndRender ok
+	 *   Orange(255,165,0)=error    Green(0,255,0)=inline diag only */
+	if (tex && lt->render_count <= 40) {
 		gs_stagesurf_t *ss = gs_stagesurface_create(rw, rh, GS_RGBA);
 		if (ss) {
 			gs_stage_texture(ss, tex);
 			uint8_t *sdata;
 			uint32_t slinesize;
 			if (gs_stagesurface_map(ss, &sdata, &slinesize)) {
-				/* Read pixel at (10,10) and (cx/2, cy/2) */
-				uint32_t p1_off = 10 * 4 + 10 * slinesize;
-				uint32_t mid_x = rw / 2;
-				uint32_t mid_y = rh / 2;
-				uint32_t p2_off = mid_x * 4 + mid_y * slinesize;
-				blog(LOG_INFO, TAG "render #%d: pixel(10,10)="
-				     "RGBA(%u,%u,%u,%u) pixel(%u,%u)="
-				     "RGBA(%u,%u,%u,%u)",
-				     lt->render_count,
-				     sdata[p1_off+0], sdata[p1_off+1],
-				     sdata[p1_off+2], sdata[p1_off+3],
-				     mid_x, mid_y,
-				     sdata[p2_off+0], sdata[p2_off+1],
-				     sdata[p2_off+2], sdata[p2_off+3]);
+				/* Status pixel at (2,2) */
+				uint32_t s_off = 2 * 4 + 2 * slinesize;
+				uint8_t sr = sdata[s_off+0], sg = sdata[s_off+1];
+				uint8_t sb = sdata[s_off+2], sa = sdata[s_off+3];
+				const char *stage = "unknown";
+				if (sa == 0) stage = "not-loaded";
+				else if (sr==0 && sg==255 && sb==0) stage = "inline-diag";
+				else if (sr==255 && sg==0 && sb==0) stage = "bridge-init";
+				else if (sr==255 && sg==255 && sb==0) stage = "waiting-lottie";
+				else if (sr==0 && sg==128 && sb==255) stage = "lottie-avail";
+				else if (sr==0 && sg==255 && sb==255) stage = "DOMLoaded";
+				else if (sr==255 && sg==0 && sb==255) stage = "seekRender-ok";
+				else if (sr==255 && sg==165 && sb==0) stage = "ERROR";
+				else if (sr==255 && sg==0 && sb==128) stage = "script-load-FAIL";
+				else if (sr==0 && sg==255 && sb==0) stage = "PLAYING";
+				else if (sr==0 && sg==0 && sb==0) stage = "black";
+
+				/* Also sample center of each region */
+				uint32_t mA_off = (rw/2)*4 + (lt->cy/2)*slinesize;
+				uint32_t mB_off = (rw/2)*4 + (lt->cy + lt->cy/2)*slinesize;
+				uint32_t ov_off = (rw/2)*4 + (lt->cy*2 + lt->cy/2)*slinesize;
+				/* Read diagnostic pixels at row 21 (encoded by bridge.js) */
+				uint32_t diag_row = 21 * slinesize;
+
+				blog(LOG_INFO, TAG "render #%d: status=%s RGBA(%u,%u,%u,%u) "
+				     "matteA=RGBA(%u,%u,%u,%u) "
+				     "matteB=RGBA(%u,%u,%u,%u) "
+				     "overlay=RGBA(%u,%u,%u,%u)",
+				     lt->render_count, stage, sr, sg, sb, sa,
+				     sdata[mA_off+0], sdata[mA_off+1], sdata[mA_off+2], sdata[mA_off+3],
+				     sdata[mB_off+0], sdata[mB_off+1], sdata[mB_off+2], sdata[mB_off+3],
+				     sdata[ov_off+0], sdata[ov_off+1], sdata[ov_off+2], sdata[ov_off+3]);
+				/* Always dump raw bytes at diag row for debugging */
+				blog(LOG_INFO, TAG "  diag row21 raw: [%02x %02x %02x %02x] [%02x %02x %02x %02x] "
+				     "[%02x %02x %02x %02x] [%02x %02x %02x %02x] [%02x %02x %02x %02x]",
+				     sdata[diag_row+0], sdata[diag_row+1], sdata[diag_row+2], sdata[diag_row+3],
+				     sdata[diag_row+4], sdata[diag_row+5], sdata[diag_row+6], sdata[diag_row+7],
+				     sdata[diag_row+8], sdata[diag_row+9], sdata[diag_row+10], sdata[diag_row+11],
+				     sdata[diag_row+12], sdata[diag_row+13], sdata[diag_row+14], sdata[diag_row+15],
+				     sdata[diag_row+16], sdata[diag_row+17], sdata[diag_row+18], sdata[diag_row+19]);
 				gs_stagesurface_unmap(ss);
-			} else {
-				blog(LOG_INFO, TAG "render #%d: stagesurf map FAILED",
-				     lt->render_count);
 			}
 			gs_stagesurface_destroy(ss);
 		}

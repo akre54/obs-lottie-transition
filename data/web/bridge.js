@@ -16,6 +16,27 @@
   canvas.height = CANVAS_HEIGHT;
   const ctx = canvas.getContext('2d');
 
+  // DIAGNOSTIC: Paint status flags as pixel colors at (0,0).
+  // Each stage overwrites with a new color so C can read the last-reached stage.
+  // Stage 1 (bridge init): Red
+  // Stage 2 (lottie loaded): Yellow
+  // Stage 3 (anim DOMLoaded): Cyan
+  // Stage 4 (seekAndRender ok): Magenta
+  // Stage 5 (playback running): White
+  // Error: Orange (255,165,0)
+  function paintStatus(r, g, b) {
+    // Paint a 4px wide status bar at the very top-left of the canvas
+    ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+    ctx.fillRect(0, 0, 20, 20);
+  }
+
+  // Stage 1: bridge.js started
+  ctx.fillStyle = 'red';
+  ctx.fillRect(0, 0, WIDTH, CANVAS_HEIGHT);
+  paintStatus(255, 0, 0);
+
+  // Lottie loads async via dynamic <script> — we need to wait for it
+
   let slotA = null, slotB = null, matteA = null, matteB = null;
   let animInstance = null;
   let hasSlots = false, hasMattes = false;
@@ -54,15 +75,26 @@
       animationData: jsonData
     });
 
+    // Stage 2: lottie.loadAnimation called
+    paintStatus(255, 255, 0);
     animInstance.addEventListener('DOMLoaded', onAnimLoaded);
+    animInstance.addEventListener('error', function() {
+      ctx.fillStyle = 'orange';
+      ctx.fillRect(0, 0, WIDTH, CANVAS_HEIGHT);
+    });
   }
 
   function onAnimLoaded() {
+    // Stage 3: DOMLoaded
+    paintStatus(0, 255, 255);
+
     var elements = animInstance.renderer.elements;
+    console.error('[bridge] elements count:', elements ? elements.length : 'NULL');
     for (var i = 0; i < elements.length; i++) {
       var el = elements[i];
       if (!el || !el.data) continue;
       var name = el.data.nm || '';
+      console.error('[bridge] element[' + i + '] name="' + name + '" type=' + el.data.ty);
       if (name === '[SlotA]') { slotA = el; el.hide(); }
       else if (name === '[SlotB]') { slotB = el; el.hide(); }
       else if (name === '[MatteA]') { matteA = el; }
@@ -73,12 +105,20 @@
 
     durationMs = (animInstance.totalFrames / animInstance.frameRate) * 1000;
 
-    console.log('[bridge] Animation loaded. slots:', hasSlots, 'mattes:', hasMattes,
+    console.error('[bridge] Animation loaded. slots:', hasSlots, 'mattes:', hasMattes,
       'frames:', animInstance.totalFrames, 'fps:', animInstance.frameRate,
       'duration:', durationMs, 'ms');
 
     // Auto-start: render first frame, then begin playback loop
-    seekAndRender(0);
+    try {
+      seekAndRender(0);
+      // Stage 4: seekAndRender completed
+      paintStatus(255, 0, 255);
+    } catch(e) {
+      ctx.fillStyle = 'orange';
+      ctx.fillRect(0, 0, WIDTH, CANVAS_HEIGHT);
+      return;
+    }
     startPlayback();
   }
 
@@ -127,8 +167,12 @@
     ctx.putImageData(imageData, 0, HEIGHT * 3);
   }
 
+  var _renderCallCount = 0;
   function renderLottieWithLayers(visibleLayers, targetY) {
-    if (!animInstance || !animInstance.renderer) return;
+    if (!animInstance || !animInstance.renderer) {
+      console.error('[bridge] renderLottie: no renderer!');
+      return;
+    }
     var elements = animInstance.renderer.elements;
     var savedVisibility = [];
     for (var i = 0; i < elements.length; i++) {
@@ -147,6 +191,15 @@
       }
     }
     animInstance.renderer.renderFrame(animInstance.currentFrame);
+
+    // Check if lottieCanvas has any non-transparent pixels
+    _renderCallCount++;
+    if (_renderCallCount <= 6) {
+      var lctx = lottieCanvas.getContext('2d');
+      var sample = lctx.getImageData(WIDTH/2, HEIGHT/2, 1, 1).data;
+      console.error('[bridge] renderLottie(' + visibleLayers + ' → y=' + targetY + '): lottieCanvas center pixel RGBA(' + sample[0] + ',' + sample[1] + ',' + sample[2] + ',' + sample[3] + ')');
+    }
+
     ctx.drawImage(lottieCanvas, 0, 0, WIDTH, HEIGHT, 0, targetY, WIDTH, HEIGHT);
     for (var j = 0; j < savedVisibility.length; j++) {
       if (savedVisibility[j].hidden) savedVisibility[j].el.hide();
@@ -157,23 +210,33 @@
   function seekAndRender(frame) {
     if (!animInstance || !animInstance.isLoaded) return;
     animInstance.goToAndStop(frame, true);
-    ctx.clearRect(0, 0, WIDTH, CANVAS_HEIGHT);
+    // Clear canvas but preserve status pixel area (top-left 20x20)
+    ctx.clearRect(20, 0, WIDTH - 20, CANVAS_HEIGHT);
+    ctx.clearRect(0, 20, 20, CANVAS_HEIGHT - 20);
 
-    if (matteA) {
-      renderLottieWithLayers(['[MatteA]'], 0);
-    } else {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    // DIAGNOSTIC: Render all layers (no hide/show) to see if lottie outputs anything
+    var allElements = animInstance.renderer.elements;
+    for (var i = 0; i < allElements.length; i++) {
+      if (allElements[i]) allElements[i].show();
+    }
+    animInstance.renderer.renderFrame(animInstance.currentFrame);
+
+    // Use console.error (not console.log) — OBS only forwards error/fatal to logs
+    _renderCallCount++;
+    if (_renderCallCount <= 5) {
+      var lctx = lottieCanvas.getContext('2d');
+      var centerPx = lctx.getImageData(Math.floor(WIDTH/2), Math.floor(HEIGHT/2), 1, 1).data;
+      var cornerPx = lctx.getImageData(100, 100, 1, 1).data;
+      console.error('[bridge] lottieCanvas center=RGBA(' + centerPx[0] + ',' + centerPx[1] + ',' + centerPx[2] + ',' + centerPx[3] + ') corner=RGBA(' + cornerPx[0] + ',' + cornerPx[1] + ',' + cornerPx[2] + ',' + cornerPx[3] + ') size=' + lottieCanvas.width + 'x' + lottieCanvas.height);
+      console.error('[bridge] frame=' + animInstance.currentFrame + '/' + animInstance.totalFrames + ' elems=' + (animInstance.renderer.elements ? animInstance.renderer.elements.length : 0) + ' canvasCtx=' + !!animInstance.renderer.canvasContext + ' loaded=' + animInstance.isLoaded);
+      console.error('[bridge] renderer.canvas === lottieCanvas: ' + (animInstance.renderer.canvasContext === lctx));
+      console.error('[bridge] renderer.renderConfig: ' + JSON.stringify(animInstance.renderer.renderConfig || {}));
     }
 
-    if (matteB) {
-      renderLottieWithLayers(['[MatteB]'], HEIGHT);
-    } else {
-      ctx.fillStyle = 'black';
-      ctx.fillRect(0, HEIGHT, WIDTH, HEIGHT);
-    }
-
-    renderLottieWithLayers(['decorative'], HEIGHT * 2);
+    // Copy all-layers render to all three regions for diagnostic
+    ctx.drawImage(lottieCanvas, 0, 0, WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT);
+    ctx.drawImage(lottieCanvas, 0, 0, WIDTH, HEIGHT, 0, HEIGHT, WIDTH, HEIGHT);
+    ctx.drawImage(lottieCanvas, 0, 0, WIDTH, HEIGHT, 0, HEIGHT * 2, WIDTH, HEIGHT);
 
     if (hasSlots) {
       encodeDataStrip();
@@ -184,7 +247,7 @@
     if (isPlaying) return;
     isPlaying = true;
     startTime = performance.now();
-    console.log('[bridge] Starting auto-playback');
+    console.error('[bridge] Starting auto-playback');
     requestAnimationFrame(playbackLoop);
   }
 
@@ -196,13 +259,15 @@
     var frame = progress * (animInstance.totalFrames - 1);
 
     seekAndRender(frame);
+    // Stage 5: playback running — paint green status
+    paintStatus(0, 255, 0);
 
     if (progress < 1.0) {
       requestAnimationFrame(playbackLoop);
     } else {
       // Hold on last frame
       isPlaying = false;
-      console.log('[bridge] Playback complete');
+      console.error('[bridge] Playback complete');
     }
   }
 
@@ -219,17 +284,27 @@
     try { loadAnimationData(JSON.parse(jsonString)); } catch(e) { console.error('[bridge] Parse error:', e); }
   };
 
-  // Auto-load from _lottieData (set by <script src> before bridge.js)
-  if (window._lottieData) {
-    console.log('[bridge] Found _lottieData, loading animation...');
-    loadAnimationData(window._lottieData);
-  } else if (window._pendingLottieData) {
-    console.log('[bridge] Found _pendingLottieData, loading...');
-    window.loadLottieData(window._pendingLottieData);
-    delete window._pendingLottieData;
-  } else {
-    console.log('[bridge] No lottie data found, waiting for loadLottieData()');
+  // Start animation once lottie library is available
+  function tryStart() {
+    if (typeof lottie === 'undefined') {
+      // Still waiting for lottie — paint yellow status
+      paintStatus(255, 255, 0);
+      return;
+    }
+    // Stage 2: lottie available
+    paintStatus(0, 128, 255);
+
+    if (window._lottieData) {
+      loadAnimationData(window._lottieData);
+    }
   }
 
-  console.log('[bridge] Bridge initialized (self-driving mode)');
+  // If lottie already loaded (sync script), start now
+  if (typeof lottie !== 'undefined') {
+    tryStart();
+  } else {
+    // Wait for async lottie load
+    paintStatus(255, 255, 0);
+    window._onLottieReady = tryStart;
+  }
 })();
