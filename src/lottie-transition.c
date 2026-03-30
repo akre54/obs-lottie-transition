@@ -62,19 +62,29 @@ static bool build_html_file(struct lottie_transition *lt)
 	if (lt->lottie_file && *lt->lottie_file)
 		anim_json = os_quick_read_utf8_file(lt->lottie_file);
 
+	/* Write anim data as external JS */
+	if (anim_json) {
+		struct dstr anim_js = {0};
+		dstr_catf(&anim_js, "window._lottieData=%s;", anim_json);
+		os_quick_write_utf8_file("/tmp/obs-lottie-anim.js",
+					 anim_js.array, anim_js.len, false);
+		dstr_free(&anim_js);
+	}
+
 	UNUSED_PARAMETER(anim_json);
 
-	/* Write a tiny external JS file */
-	os_quick_write_utf8_file("/tmp/obs-lottie-test.js",
-				 "document.body.style.background='cyan';",
-				 38, false);
-
-	/* Test: inline lime, then external cyan. Expect cyan if src works. */
+	/* Bisect: full HTML + lottie + bridge */
 	struct dstr html = {0};
 	dstr_cat(&html,
-		"<!DOCTYPE html><html><body>"
+		"<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+		"<style>*{margin:0;padding:0;overflow:hidden;background:#000}"
+		"canvas{display:block}</style></head><body>"
+		"<canvas id='lottie-canvas'></canvas>"
 		"<script>document.body.style.background='lime';</script>"
-		"<script src='obs-lottie-test.js'></script>"
+		"<script src='obs-lottie-lottie.min.js'></script>"
+		"<script>document.body.style.background='cyan';</script>"
+		"<script src='obs-lottie-bridge.js'></script>"
+		"<script>document.body.style.background='magenta';</script>"
 		"</body></html>");
 
 	blog(LOG_INFO, TAG "HTML size: %lu bytes (external JS, anim=%s)",
