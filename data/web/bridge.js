@@ -53,21 +53,16 @@
     slotA = slotB = matteA = matteB = null;
     hasSlots = hasMattes = false;
 
-    lottieCanvas = document.createElement('canvas');
-    lottieCanvas.width = WIDTH;
-    lottieCanvas.height = HEIGHT;
-
+    // Container must have real dimensions — lottie creates its own canvas inside it
     const container = document.createElement('div');
-    container.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden';
+    container.style.cssText = 'position:absolute;left:-9999px;width:' + WIDTH + 'px;height:' + HEIGHT + 'px;overflow:hidden';
     document.body.appendChild(container);
 
     animInstance = lottie.loadAnimation({
       container: container,
       renderer: 'canvas',
       rendererSettings: {
-        canvas: lottieCanvas,
         clearCanvas: true,
-        context: '2d',
         preserveAspectRatio: 'xMidYMid slice'
       },
       loop: false,
@@ -87,6 +82,10 @@
   function onAnimLoaded() {
     // Stage 3: DOMLoaded
     paintStatus(0, 255, 255);
+
+    // Grab the canvas that lottie-web actually created inside the container
+    lottieCanvas = animInstance.renderer.canvasContext.canvas;
+    console.error('[bridge] lottieCanvas from renderer: ' + lottieCanvas.width + 'x' + lottieCanvas.height);
 
     var elements = animInstance.renderer.elements;
     console.error('[bridge] elements count:', elements ? elements.length : 'NULL');

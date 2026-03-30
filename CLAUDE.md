@@ -46,6 +46,8 @@ These are hard-won findings from extensive debugging. **Do not re-attempt failed
 - **`file://` URLs** — CEF silently fails to load ANY file:// URL for private browser sources, regardless of path (even /tmp with no spaces). The page never loads, zero console messages.
 - **`exec_browser_js` (proc_handler "javascript")** — Silently dropped for private browser sources. Even tiny scripts have zero effect. This rules out ALL runtime JS injection.
 - **`restart_when_active` + active toggle for page reload** — Does NOT reliably reload the page on subsequent transitions. First load works, but `dec_active/inc_active` toggle does not trigger a fresh page load. Must destroy and recreate the browser source for each transition instead.
+- **Blocking `<script src='file.js'>` tags** — Kills ALL subsequent inline `<script>` blocks in CEF private browser sources. Must use dynamic `document.createElement('script')` with onload callback instead.
+- **`console.log()` for debugging** — CEF only forwards `LOGSEVERITY_ERROR` and `LOGSEVERITY_FATAL` to OBS logs. Use `console.error()` instead for messages to appear in OBS log files.
 - **`data:text/html;base64,` with large payloads (~425KB)** — Page loads (CSS background renders as opaque black) but JS doesn't execute. Cause unknown.
 - **Raw unencoded `data:text/html,` with `#` or `%` chars** — `#` acts as URL fragment delimiter (truncates content). `%` triggers percent-decode (corrupts content). These chars MUST be encoded.
 - **`obs_source_add_active_child()`** — Doesn't propagate activation when parent transition isn't active
