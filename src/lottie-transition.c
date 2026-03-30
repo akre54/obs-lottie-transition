@@ -91,8 +91,8 @@ static bool build_html_file(struct lottie_transition *lt)
 		"console.log('[diag] Inline JS executed, painted lime');"
 		"}catch(e){console.log('[diag] ERROR:'+e);}"
 		"</script>",
-		lt->cx, lt->cy * BROWSER_REGIONS + DATA_STRIP_HEIGHT,
-		lt->cx, lt->cy * BROWSER_REGIONS + DATA_STRIP_HEIGHT);
+		lt->cx, lt->cy,
+		lt->cx, lt->cy);
 
 	dstr_catf(&html,
 		"<script>window._obsConfig={width:%u,height:%u,dataStripHeight:%d};</script>",
@@ -151,19 +151,17 @@ static void create_browser_source(struct lottie_transition *lt)
 		return;
 	}
 
-	uint32_t browser_height = lt->cy * BROWSER_REGIONS + DATA_STRIP_HEIGHT;
-
 	obs_data_t *browser_settings = obs_data_create();
 	obs_data_set_bool(browser_settings, "is_local_file", true);
 	obs_data_set_string(browser_settings, "local_file", HTML_TEMP_PATH);
 	obs_data_set_int(browser_settings, "width", lt->cx);
-	obs_data_set_int(browser_settings, "height", browser_height);
+	obs_data_set_int(browser_settings, "height", lt->cy);
 	obs_data_set_int(browser_settings, "fps", 60);
 	obs_data_set_bool(browser_settings, "shutdown", false);
 	obs_data_set_bool(browser_settings, "restart_when_active", false);
 
 	blog(LOG_INFO, TAG "Creating browser (is_local_file): size=%ux%u",
-	     lt->cx, browser_height);
+	     lt->cx, lt->cy);
 
 	lt->browser = obs_source_create_private("browser_source",
 						"lottie_transition_browser",
@@ -430,9 +428,7 @@ static void *lt_create(obs_data_t *settings, obs_source_t *source)
 	if (lt->effect) {
 		lt->ep_scene_a = gs_effect_get_param_by_name(lt->effect, "scene_a");
 		lt->ep_scene_b = gs_effect_get_param_by_name(lt->effect, "scene_b");
-		lt->ep_matte_a = gs_effect_get_param_by_name(lt->effect, "matte_a");
-		lt->ep_matte_b = gs_effect_get_param_by_name(lt->effect, "matte_b");
-		lt->ep_overlay = gs_effect_get_param_by_name(lt->effect, "overlay");
+		lt->ep_browser_tex = gs_effect_get_param_by_name(lt->effect, "browser_tex");
 		lt->ep_invert_matte = gs_effect_get_param_by_name(lt->effect, "invert_matte");
 	}
 
@@ -594,11 +590,8 @@ static void lt_video_tick(void *data, float seconds)
 
 	/* Animation is self-driving in bridge.js via requestAnimationFrame */
 
-	obs_enter_graphics();
-	ensure_stagesurf(lt);
-	read_data_strip(lt);
-	stage_data_strip(lt);
-	obs_leave_graphics();
+	/* Data strip / slot transforms disabled for now — channel-packing
+	 * approach puts everything in a single 1080p texture. */
 }
 
 /* ------------------------------------------------------------------ */
@@ -610,123 +603,75 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 					 uint32_t cx, uint32_t cy)
 {
 	struct lottie_transition *lt = data;
-
-	UNUSED_PARAMETER(a);
-	UNUSED_PARAMETER(b);
-
 	lt->render_count++;
 
-	if (!lt->browser) {
+	if (!lt->browser || !lt->effect) {
 		if (lt->render_count <= 3)
-			blog(LOG_INFO, TAG "render #%d: NO BROWSER", lt->render_count);
+			blog(LOG_INFO, TAG "render #%d: NO BROWSER/EFFECT", lt->render_count);
 		return;
 	}
 
 	uint32_t bw = obs_source_get_width(lt->browser);
 	uint32_t bh = obs_source_get_height(lt->browser);
 
-	if (lt->render_count <= 20) {
-		blog(LOG_INFO, TAG "render #%d  t=%.3f  cx=%u cy=%u  "
-		     "browser=%p bw=%u bh=%u",
-		     lt->render_count, t, cx, cy,
-		     (void *)lt->browser, bw, bh);
+	if (lt->render_count <= 10) {
+		blog(LOG_INFO, TAG "render #%d  t=%.3f  cx=%u cy=%u  bw=%u bh=%u",
+		     lt->render_count, t, cx, cy, bw, bh);
 	}
 
-	/* Render browser into a texrender */
-	uint32_t rw = bw ? bw : cx;
-	uint32_t rh = bh ? bh : cy;
-
-	gs_texrender_t *tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+	/* Render browser source into a texrender */
+	gs_texrender_t *browser_tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	bool tr_ok = false;
-	if (gs_texrender_begin(tr, rw, rh)) {
+	if (gs_texrender_begin(browser_tr, cx, cy)) {
 		struct vec4 cc;
 		vec4_zero(&cc);
 		gs_clear(GS_CLEAR_COLOR, &cc, 0.0f, 0);
 		obs_source_video_render(lt->browser);
-		gs_texrender_end(tr);
+		gs_texrender_end(browser_tr);
 		tr_ok = true;
 	}
 
-	gs_texture_t *tex = gs_texrender_get_texture(tr);
+	gs_texture_t *browser_texture = gs_texrender_get_texture(browser_tr);
 
-	if (lt->render_count <= 20) {
-		blog(LOG_INFO, TAG "render #%d: texrender_ok=%d tex=%p",
-		     lt->render_count, (int)tr_ok, (void *)tex);
-	}
-
-	/* Read back pixels to check browser state.
-	 * bridge.js paints a 20x20 status pixel at (0,0):
-	 *   Red(255,0,0)=bridge init  Yellow(255,255,0)=lottie loaded
-	 *   Cyan(0,255,255)=DOMLoaded  Magenta(255,0,255)=seekAndRender ok
-	 *   Orange(255,165,0)=error    Green(0,255,0)=inline diag only */
-	if (tex && lt->render_count <= 40) {
-		gs_stagesurf_t *ss = gs_stagesurface_create(rw, rh, GS_RGBA);
+	/* Diagnostic readback for first few frames */
+	if (browser_texture && lt->render_count <= 10) {
+		gs_stagesurf_t *ss = gs_stagesurface_create(cx, cy, GS_RGBA);
 		if (ss) {
-			gs_stage_texture(ss, tex);
+			gs_stage_texture(ss, browser_texture);
 			uint8_t *sdata;
 			uint32_t slinesize;
 			if (gs_stagesurface_map(ss, &sdata, &slinesize)) {
-				/* Status pixel at (2,2) */
-				uint32_t s_off = 2 * 4 + 2 * slinesize;
-				uint8_t sr = sdata[s_off+0], sg = sdata[s_off+1];
-				uint8_t sb = sdata[s_off+2], sa = sdata[s_off+3];
-				const char *stage = "unknown";
-				if (sa == 0) stage = "not-loaded";
-				else if (sr==0 && sg==255 && sb==0) stage = "inline-diag";
-				else if (sr==255 && sg==0 && sb==0) stage = "bridge-init";
-				else if (sr==255 && sg==255 && sb==0) stage = "waiting-lottie";
-				else if (sr==0 && sg==128 && sb==255) stage = "lottie-avail";
-				else if (sr==0 && sg==255 && sb==255) stage = "DOMLoaded";
-				else if (sr==255 && sg==0 && sb==255) stage = "seekRender-ok";
-				else if (sr==255 && sg==165 && sb==0) stage = "ERROR";
-				else if (sr==255 && sg==0 && sb==128) stage = "script-load-FAIL";
-				else if (sr==0 && sg==255 && sb==0) stage = "PLAYING";
-				else if (sr==0 && sg==0 && sb==0) stage = "black";
-
-				/* Also sample center of each region */
-				uint32_t mA_off = (rw/2)*4 + (lt->cy/2)*slinesize;
-				uint32_t mB_off = (rw/2)*4 + (lt->cy + lt->cy/2)*slinesize;
-				uint32_t ov_off = (rw/2)*4 + (lt->cy*2 + lt->cy/2)*slinesize;
-				/* Read diagnostic pixels at row 21 (encoded by bridge.js) */
-				uint32_t diag_row = 21 * slinesize;
-
-				blog(LOG_INFO, TAG "render #%d: status=%s RGBA(%u,%u,%u,%u) "
-				     "matteA=RGBA(%u,%u,%u,%u) "
-				     "matteB=RGBA(%u,%u,%u,%u) "
-				     "overlay=RGBA(%u,%u,%u,%u)",
-				     lt->render_count, stage, sr, sg, sb, sa,
-				     sdata[mA_off+0], sdata[mA_off+1], sdata[mA_off+2], sdata[mA_off+3],
-				     sdata[mB_off+0], sdata[mB_off+1], sdata[mB_off+2], sdata[mB_off+3],
-				     sdata[ov_off+0], sdata[ov_off+1], sdata[ov_off+2], sdata[ov_off+3]);
-				/* Always dump raw bytes at diag row for debugging */
-				blog(LOG_INFO, TAG "  diag row21 raw: [%02x %02x %02x %02x] [%02x %02x %02x %02x] "
-				     "[%02x %02x %02x %02x] [%02x %02x %02x %02x] [%02x %02x %02x %02x]",
-				     sdata[diag_row+0], sdata[diag_row+1], sdata[diag_row+2], sdata[diag_row+3],
-				     sdata[diag_row+4], sdata[diag_row+5], sdata[diag_row+6], sdata[diag_row+7],
-				     sdata[diag_row+8], sdata[diag_row+9], sdata[diag_row+10], sdata[diag_row+11],
-				     sdata[diag_row+12], sdata[diag_row+13], sdata[diag_row+14], sdata[diag_row+15],
-				     sdata[diag_row+16], sdata[diag_row+17], sdata[diag_row+18], sdata[diag_row+19]);
+				uint32_t mid = (cx/2)*4 + (cy/2)*slinesize;
+				blog(LOG_INFO, TAG "render #%d: browser center RGBA(%u,%u,%u,%u)",
+				     lt->render_count,
+				     sdata[mid], sdata[mid+1], sdata[mid+2], sdata[mid+3]);
 				gs_stagesurface_unmap(ss);
 			}
 			gs_stagesurface_destroy(ss);
 		}
 	}
 
-	/* Draw browser texture to output */
-	if (tex) {
-		gs_effect_t *eff = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-		gs_eparam_t *img = gs_effect_get_param_by_name(eff, "image");
-		gs_effect_set_texture(img, tex);
-
-		gs_technique_t *tech = gs_effect_get_technique(eff, "Draw");
-		gs_technique_begin(tech);
-		gs_technique_begin_pass(tech, 0);
-		gs_draw_sprite(tex, 0, cx, cy);
-		gs_technique_end_pass(tech);
-		gs_technique_end(tech);
+	if (!browser_texture || !a || !b) {
+		gs_texrender_destroy(browser_tr);
+		return;
 	}
 
-	gs_texrender_destroy(tr);
+	/* Composite using shader:
+	 * browser_tex: R=matteA, G=matteB, B=overlay_lum, A=overlay_alpha */
+	gs_effect_set_texture(lt->ep_scene_a, a);
+	gs_effect_set_texture(lt->ep_scene_b, b);
+	gs_effect_set_texture(lt->ep_browser_tex, browser_texture);
+	gs_effect_set_bool(lt->ep_invert_matte, lt->invert_matte);
+
+	const char *tech_name = "MatteComposite";
+	gs_technique_t *tech = gs_effect_get_technique(lt->effect, tech_name);
+	gs_technique_begin(tech);
+	gs_technique_begin_pass(tech, 0);
+	gs_draw_sprite(browser_texture, 0, cx, cy);
+	gs_technique_end_pass(tech);
+	gs_technique_end(tech);
+
+	gs_texrender_destroy(browser_tr);
 }
 
 static void lt_video_render(void *data, gs_effect_t *effect)

@@ -1,9 +1,7 @@
 uniform float4x4 ViewProj;
 uniform texture2d scene_a;
 uniform texture2d scene_b;
-uniform texture2d matte_a;
-uniform texture2d matte_b;
-uniform texture2d overlay;
+uniform texture2d browser_tex;
 uniform bool invert_matte;
 
 sampler_state texSampler {
@@ -29,9 +27,11 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 {
 	float4 sa = scene_a.Sample(texSampler, v_in.uv);
 	float4 sb = scene_b.Sample(texSampler, v_in.uv);
+	float4 br = browser_tex.Sample(texSampler, v_in.uv);
 
-	float ma = matte_a.Sample(texSampler, v_in.uv).r;
-	float mb = matte_b.Sample(texSampler, v_in.uv).r;
+	// Channel-packed: R=matteA, G=matteB, B=overlay_alpha, A=always 1
+	float ma = br.r;
+	float mb = br.g;
 
 	if (invert_matte) {
 		ma = 1.0 - ma;
@@ -40,8 +40,9 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 
 	float4 result = sa * ma + sb * mb;
 
-	float4 ov = overlay.Sample(texSampler, v_in.uv);
-	result.rgb = lerp(result.rgb, ov.rgb, ov.a);
+	// Overlay: B channel is alpha/blend factor, rendered as white
+	float ov_alpha = br.b;
+	result.rgb = lerp(result.rgb, float3(1.0, 1.0, 1.0), ov_alpha);
 	result.a = 1.0;
 
 	return result;
@@ -51,9 +52,10 @@ float4 PSMatteOnly(VertData v_in) : TARGET
 {
 	float4 sa = scene_a.Sample(texSampler, v_in.uv);
 	float4 sb = scene_b.Sample(texSampler, v_in.uv);
+	float4 br = browser_tex.Sample(texSampler, v_in.uv);
 
-	float ma = matte_a.Sample(texSampler, v_in.uv).r;
-	float mb = matte_b.Sample(texSampler, v_in.uv).r;
+	float ma = br.r;
+	float mb = br.g;
 
 	if (invert_matte) {
 		ma = 1.0 - ma;

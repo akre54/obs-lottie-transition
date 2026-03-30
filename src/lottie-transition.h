@@ -33,9 +33,7 @@ struct lottie_transition {
 	gs_effect_t *effect;
 	gs_eparam_t *ep_scene_a;
 	gs_eparam_t *ep_scene_b;
-	gs_eparam_t *ep_matte_a;
-	gs_eparam_t *ep_matte_b;
-	gs_eparam_t *ep_overlay;
+	gs_eparam_t *ep_browser_tex;
 	gs_eparam_t *ep_invert_matte;
 
 	/* Transition state */

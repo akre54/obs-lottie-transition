@@ -51,6 +51,7 @@ These are hard-won findings from extensive debugging. **Do not re-attempt failed
 - **`data:text/html;base64,` with large payloads (~425KB)** — Page loads (CSS background renders as opaque black) but JS doesn't execute. Cause unknown.
 - **Raw unencoded `data:text/html,` with `#` or `%` chars** — `#` acts as URL fragment delimiter (truncates content). `%` triggers percent-decode (corrupts content). These chars MUST be encoded.
 - **`obs_source_add_active_child()`** — Doesn't propagate activation when parent transition isn't active
+- **`lottie.loadAnimation({ rendererSettings: { canvas: myCanvas } })` with a container** — lottie-web ignores the `canvas` param when a container is also provided. It creates its own canvas inside the container. Must grab the actual canvas via `animInstance.renderer.canvasContext.canvas` after DOMLoaded. Also, the container MUST have real dimensions (not `width:0;height:0`) or lottie's canvas will be 0x0.
 
 ### Resolved: Large JS Payload Loading
 
