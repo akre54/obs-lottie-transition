@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 
 const BridgeCore = require('../bridge-core');
 
@@ -69,4 +70,55 @@ test('overlay-bearing example does not accidentally introduce MatteB', () => {
   assert.ok(names.includes('[MatteA]'));
   assert.ok(!names.includes('[MatteB]'));
   assert.ok(names.includes('ring-decoration'));
+});
+
+test('JS transform strip encoding stays compatible with native decoder', () => {
+  const decoder = process.env.TRANSFORM_DECODE_CLI;
+
+  if (!decoder) {
+    test.skip('native transform decoder helper not configured');
+    return;
+  }
+
+  const imageData = { data: new Uint8ClampedArray(8 * 2 * 4) };
+  const slotA = {
+    pos_x: 321.25,
+    pos_y: -123.5,
+    scale_x: 1.75,
+    scale_y: 0.5,
+    rotation: 33,
+    opacity: 0.4
+  };
+  const slotB = {
+    pos_x: -640,
+    pos_y: 222.125,
+    scale_x: 2.25,
+    scale_y: 1.2,
+    rotation: -147.5,
+    opacity: 0.85
+  };
+
+  BridgeCore.encodeDataStrip(imageData, 8, 2, slotA, slotB);
+
+  const rowStart = (2 - 1) * 8 * 4;
+  const bytes = Array.from(imageData.data.slice(rowStart, rowStart + 24)).map(String);
+  const result = childProcess.spawnSync(decoder, bytes, { encoding: 'utf8' });
+
+  assert.equal(result.status, 0, result.stderr);
+
+  const decoded = JSON.parse(result.stdout);
+
+  assert.ok(Math.abs(decoded.slotA.pos_x - slotA.pos_x) < 0.2);
+  assert.ok(Math.abs(decoded.slotA.pos_y - slotA.pos_y) < 0.2);
+  assert.ok(Math.abs(decoded.slotA.scale_x - slotA.scale_x) < 0.01);
+  assert.ok(Math.abs(decoded.slotA.scale_y - slotA.scale_y) < 0.01);
+  assert.ok(Math.abs(decoded.slotA.rotation - slotA.rotation) < 0.02);
+  assert.ok(Math.abs(decoded.slotA.opacity - slotA.opacity) < 0.001);
+
+  assert.ok(Math.abs(decoded.slotB.pos_x - slotB.pos_x) < 0.2);
+  assert.ok(Math.abs(decoded.slotB.pos_y - slotB.pos_y) < 0.2);
+  assert.ok(Math.abs(decoded.slotB.scale_x - slotB.scale_x) < 0.01);
+  assert.ok(Math.abs(decoded.slotB.scale_y - slotB.scale_y) < 0.01);
+  assert.ok(Math.abs(decoded.slotB.rotation - slotB.rotation) < 0.02);
+  assert.ok(Math.abs(decoded.slotB.opacity - slotB.opacity) < 0.001);
 });

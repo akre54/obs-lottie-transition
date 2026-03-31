@@ -44,7 +44,14 @@ if(BUILD_TESTING)
     src/transform-decode.c
   )
 
+  add_executable(
+    transform-decode-cli
+    tests/transform-decode-cli.c
+    src/transform-decode.c
+  )
+
   target_include_directories(transform-decode-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_include_directories(transform-decode-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME transform-decode-test COMMAND transform-decode-test)
 
   find_program(NODE_EXECUTABLE node REQUIRED)
