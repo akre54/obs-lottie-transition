@@ -15,11 +15,22 @@ OBS plugin that uses Lottie animations to drive scene transitions. A private CEF
 
 Single 1920x1080 canvas with channel-packed data:
 - **R channel** = MatteA luminance (white = show scene A)
-- **G channel** = MatteB luminance (white = show scene B)
-- **B channel** = Overlay alpha (blend factor for white overlay)
+- **G channel** = MatteB luminance (white = show scene B, 0 = auto-complement from matteA)
+- **B channel** = Overlay alpha (currently unused — overlay support needs redesign to carry color)
 - **A channel** = Always 255 (browser composites away alpha=0 pixels)
 
 Three off-screen lottie instances render separately, then `getImageData`/`putImageData` packs the channels. Previous approach of stacking 3 regions vertically failed because the browser source only renders the viewport height and stretches it.
+
+### Shader Matte Logic
+
+- When matteB (G) is 0: `result = sceneA * ma + sceneB * (1 - ma)` (standard alpha-matte wipe)
+- When matteB (G) > 0: dual-matte mode with normalization so `ma + mb <= 1.0`
+- When browser not ready (`br.a < 0.5`): show scene A to avoid startup flash
+- CSS background is `#f00` (red) so pre-JS browser renders as matteA=255 (scene A visible)
+
+### Overlay Support (TODO)
+
+Overlay channel currently disabled in shader. Previous approach packed overlay alpha into B channel and blended hardcoded white — produced visible white artifacts. Needs redesign to carry actual overlay RGB color through the channel packing.
 
 ## Build / Install / Test
 
@@ -76,9 +87,11 @@ Previous failed approaches for reference:
 - `transition_stop` fires before `transition_start` on first use (settings apply triggers it)
 
 ## Lottie Animation Convention
+
 - Layer `[SlotA]` / `[SlotB]` — transform-only placeholders (hidden during render)
-- Layer `[MatteA]` / `[MatteB]` — matte masks
-- All other layers — decorative overlay
+- Layer `[MatteA]` — required matte mask (white = show scene A)
+- Layer `[MatteB]` — optional matte mask (white = show scene B). If absent, shader uses `1 - matteA`
+- All other layers — decorative overlay (currently disabled in shader, needs color packing redesign)
 - Animation JSON files go in `examples/`
 
 ## Data Strip Encoding
