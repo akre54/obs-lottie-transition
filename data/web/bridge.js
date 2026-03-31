@@ -14,15 +14,9 @@
   canvas.height = HEIGHT;
   const ctx = canvas.getContext('2d');
 
-  function paintStatus(r, g, b) {
-    ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
-    ctx.fillRect(0, 0, 20, 20);
-  }
-
-  // Stage 1: bridge.js started
+  // Stage 1: bridge.js started — fill red so shader sees matteA=255 (scene A)
   ctx.fillStyle = 'rgb(255,0,0)';
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
-  paintStatus(255, 0, 0);
 
   var instances = { matteA: null, matteB: null, overlay: null };
   var canvases = { matteA: null, matteB: null, overlay: null };
@@ -80,7 +74,6 @@
 
     inst.addEventListener('error', function() {
       console.error('[bridge] ' + name + ' error!');
-      paintStatus(255, 165, 0);
     });
 
     instances[name] = inst;
@@ -110,23 +103,19 @@
     console.error('[bridge] Creating 3 instances: matteA=' + matteAData.layers.length +
       ' matteB=' + matteBData.layers.length + ' overlay=' + overlayData.layers.length + ' layers');
 
-    paintStatus(255, 255, 0);
     createInstance('matteA', matteAData);
     createInstance('matteB', matteBData);
     createInstance('overlay', overlayData);
   }
 
   function onAllLoaded() {
-    paintStatus(0, 255, 255);
     console.error('[bridge] All 3 instances loaded. frames=' + totalFrames +
       ' fps=' + frameRate + ' duration=' + durationMs + 'ms slots=' + hasSlots);
 
     try {
       seekAndRender(0);
-      paintStatus(255, 0, 255);
     } catch(e) {
       console.error('[bridge] seekAndRender error: ' + e);
-      paintStatus(255, 165, 0);
       return;
     }
     startPlayback();
@@ -182,6 +171,10 @@
 
   var _logCount = 0;
   function seekAndRender(frame) {
+    // Clamp frame to valid range — negative frames clear lottie canvases
+    if (frame < 0) frame = 0;
+    if (frame > totalFrames - 1) frame = totalFrames - 1;
+
     // Advance all 3 lottie instances to the target frame
     var names = ['matteA', 'matteB', 'overlay'];
     for (var i = 0; i < 3; i++) {
@@ -262,8 +255,6 @@
     var frame = progress * (totalFrames - 1);
 
     seekAndRender(frame);
-    paintStatus(0, 255, 0);
-
     requestAnimationFrame(playbackLoop);
   }
 
@@ -283,7 +274,6 @@
       paintStatus(255, 255, 0);
       return;
     }
-    paintStatus(0, 128, 255);
     if (window._lottieData) {
       loadAnimationData(window._lottieData);
     }
@@ -292,7 +282,6 @@
   if (typeof lottie !== 'undefined') {
     tryStart();
   } else {
-    paintStatus(255, 255, 0);
     window._onLottieReady = tryStart;
   }
 })();

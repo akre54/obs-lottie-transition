@@ -34,7 +34,7 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 		return sa;
 	}
 
-	// Channel-packed: R=matteA, G=matteB, B=overlay_alpha, A=always 1
+	// Channel-packed: R=matteA, G=matteB, B=unused, A=always 1
 	// matteA = how much scene A to show (white = full scene A)
 	// If matteB (G) is 0 (no [MatteB] layer), scene B = 1 - matteA
 	float ma = br.r;
@@ -47,10 +47,8 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 
 	float4 result;
 	if (mb < 0.004) {
-		// No matteB: simple alpha-matte transition
 		result = sa * ma + sb * (1.0 - ma);
 	} else {
-		// Dual-matte: normalize so they sum to <= 1.0
 		float total = ma + mb;
 		if (total > 1.0) {
 			ma = ma / total;
@@ -59,9 +57,7 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 		result = sa * ma + sb * mb;
 	}
 
-	// TODO: overlay support — needs color channel packing redesign
 	result.a = 1.0;
-
 	return result;
 }
 
