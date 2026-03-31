@@ -229,63 +229,70 @@ static void read_data_strip(struct lottie_transition *lt)
 }
 
 /* ------------------------------------------------------------------ */
-/* Helper: stage data strip from browser texture for next-frame read   */
+/* Helper: decode transforms from browser texture bottom row           */
 /* ------------------------------------------------------------------ */
 
-static void stage_data_strip(struct lottie_transition *lt)
+static void decode_transforms_from_texture(struct lottie_transition *lt,
+					   gs_texture_t *browser_tex,
+					   uint32_t cx, uint32_t cy)
 {
-	if (!lt->browser || !lt->stagesurf)
+	if (!browser_tex)
 		return;
 
-	uint32_t browser_height = lt->cy * BROWSER_REGIONS + DATA_STRIP_HEIGHT;
-	uint32_t strip_y = lt->cy * BROWSER_REGIONS;
-
-	gs_texrender_t *browser_tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-	if (gs_texrender_begin(browser_tr, lt->cx, browser_height)) {
-		struct vec4 cc;
-		vec4_zero(&cc);
-		gs_clear(GS_CLEAR_COLOR, &cc, 0.0f, 0);
-		obs_source_video_render(lt->browser);
-		gs_texrender_end(browser_tr);
-	}
-
-	gs_texture_t *browser_tex = gs_texrender_get_texture(browser_tr);
-	if (!browser_tex) {
-		gs_texrender_destroy(browser_tr);
-		return;
-	}
-
+	/* Extract the bottom row of the browser texture */
 	gs_texrender_t *strip_tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-	if (gs_texrender_begin(strip_tr, lt->cx, DATA_STRIP_HEIGHT)) {
-		struct vec4 cc;
-		vec4_zero(&cc);
-		gs_clear(GS_CLEAR_COLOR, &cc, 0.0f, 0);
-
-		gs_effect_t *eff = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-		gs_eparam_t *img = gs_effect_get_param_by_name(eff, "image");
-		gs_effect_set_texture(img, browser_tex);
-
-		gs_technique_t *tech = gs_effect_get_technique(eff, "Draw");
-		gs_technique_begin(tech);
-		gs_technique_begin_pass(tech, 0);
-
-		gs_draw_sprite_subregion(browser_tex, 0,
-					 0, strip_y,
-					 lt->cx, DATA_STRIP_HEIGHT);
-
-		gs_technique_end_pass(tech);
-		gs_technique_end(tech);
-		gs_texrender_end(strip_tr);
+	if (!gs_texrender_begin(strip_tr, cx, 1)) {
+		gs_texrender_destroy(strip_tr);
+		return;
 	}
+
+	struct vec4 cc;
+	vec4_zero(&cc);
+	gs_clear(GS_CLEAR_COLOR, &cc, 0.0f, 0);
+
+	gs_effect_t *eff = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_eparam_t *img = gs_effect_get_param_by_name(eff, "image");
+	gs_effect_set_texture(img, browser_tex);
+
+	gs_technique_t *tech = gs_effect_get_technique(eff, "Draw");
+	gs_technique_begin(tech);
+	gs_technique_begin_pass(tech, 0);
+	gs_draw_sprite_subregion(browser_tex, 0, 0, cy - 1, cx, 1);
+	gs_technique_end_pass(tech);
+	gs_technique_end(tech);
+	gs_texrender_end(strip_tr);
 
 	gs_texture_t *strip_tex = gs_texrender_get_texture(strip_tr);
-	if (strip_tex) {
-		gs_stage_texture(lt->stagesurf, strip_tex);
-		lt->stage_ready = true;
+	if (!strip_tex) {
+		gs_texrender_destroy(strip_tr);
+		return;
+	}
+
+	/* Synchronous readback of just 1 row */
+	gs_stagesurf_t *ss = gs_stagesurface_create(cx, 1, GS_RGBA);
+	if (ss) {
+		gs_stage_texture(ss, strip_tex);
+		uint8_t *data;
+		uint32_t linesize;
+		if (gs_stagesurface_map(ss, &data, &linesize)) {
+			/* Check for magic marker at pixel 6: 0xCAFEBABE */
+			if (cx >= 7) {
+				uint8_t *magic = data + 6 * 4;
+				if (magic[0] == 0xCA && magic[1] == 0xFE &&
+				    magic[2] == 0xBA && magic[3] == 0xBE) {
+					transform_decode_from_pixels(
+						data, linesize, cx,
+						&lt->transform_a,
+						&lt->transform_b);
+					lt->has_transforms = true;
+				}
+			}
+			gs_stagesurface_unmap(ss);
+		}
+		gs_stagesurface_destroy(ss);
 	}
 
 	gs_texrender_destroy(strip_tr);
-	gs_texrender_destroy(browser_tr);
 }
 
 /* ------------------------------------------------------------------ */
@@ -661,10 +668,43 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 		return;
 	}
 
+	/* Decode slot transforms from bottom row of browser texture */
+	decode_transforms_from_texture(lt, browser_texture, cx, cy);
+
+	/* If slot transforms exist, render scenes with transforms applied */
+	gs_texture_t *tex_a = a;
+	gs_texture_t *tex_b = b;
+
+	if (lt->has_transforms) {
+		if (!lt->texrender_a)
+			lt->texrender_a = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		if (!lt->texrender_b)
+			lt->texrender_b = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+
+		render_scene_transformed(lt->texrender_a, lt->source, false,
+					 &lt->transform_a, cx, cy);
+		render_scene_transformed(lt->texrender_b, lt->source, true,
+					 &lt->transform_b, cx, cy);
+
+		gs_texture_t *ta = gs_texrender_get_texture(lt->texrender_a);
+		gs_texture_t *tb = gs_texrender_get_texture(lt->texrender_b);
+		if (ta) tex_a = ta;
+		if (tb) tex_b = tb;
+
+		if (lt->render_count <= 5) {
+			blog(LOG_INFO, TAG "transforms: A pos=(%.0f,%.0f) scale=(%.2f,%.2f) "
+			     "B pos=(%.0f,%.0f) scale=(%.2f,%.2f)",
+			     lt->transform_a.pos_x, lt->transform_a.pos_y,
+			     lt->transform_a.scale_x, lt->transform_a.scale_y,
+			     lt->transform_b.pos_x, lt->transform_b.pos_y,
+			     lt->transform_b.scale_x, lt->transform_b.scale_y);
+		}
+	}
+
 	/* Composite using shader:
-	 * browser_tex: R=matteA, G=matteB, B=overlay_lum, A=overlay_alpha */
-	gs_effect_set_texture(lt->ep_scene_a, a);
-	gs_effect_set_texture(lt->ep_scene_b, b);
+	 * browser_tex: R=matteA, G=matteB, B=unused, A=always 1 */
+	gs_effect_set_texture(lt->ep_scene_a, tex_a);
+	gs_effect_set_texture(lt->ep_scene_b, tex_b);
 	gs_effect_set_texture(lt->ep_browser_tex, browser_texture);
 	gs_effect_set_bool(lt->ep_invert_matte, lt->invert_matte);
 
