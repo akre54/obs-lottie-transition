@@ -232,12 +232,16 @@
     ctx.putImageData(output, 0, 0);
 
     _logCount++;
-    if (_logCount <= 6) {
+    if (_logCount <= 30) {
+      // Sample at 25% from top-left edge — more useful than center for circle wipes
+      var sx = Math.floor(WIDTH * 0.25), sy = Math.floor(HEIGHT * 0.25);
+      var idx = (sy * WIDTH + sx) * 4;
+      // Also sample center
       var cx = Math.floor(WIDTH/2), cy = Math.floor(HEIGHT/2);
-      var idx = (cy * WIDTH + cx) * 4;
+      var cidx = (cy * WIDTH + cx) * 4;
       console.error('[bridge] frame=' + frame.toFixed(1) +
-        ' center: R(matteA)=' + out[idx] + ' G(matteB)=' + out[idx+1] +
-        ' B(ov_alpha)=' + out[idx+2] + ' A=' + out[idx+3]);
+        ' edge(25%): R=' + out[idx] + ' G=' + out[idx+1] + ' B=' + out[idx+2] +
+        ' center: R=' + out[cidx] + ' G=' + out[cidx+1] + ' B=' + out[cidx+2]);
     }
   }
 

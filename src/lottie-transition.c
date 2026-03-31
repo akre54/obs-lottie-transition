@@ -633,18 +633,23 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 
 	gs_texture_t *browser_texture = gs_texrender_get_texture(browser_tr);
 
-	/* Diagnostic readback for first few frames */
-	if (browser_texture && lt->render_count <= 10) {
+	/* Diagnostic readback — log channel-packed values throughout transition */
+	if (browser_texture && lt->render_count <= 50) {
 		gs_stagesurf_t *ss = gs_stagesurface_create(cx, cy, GS_RGBA);
 		if (ss) {
 			gs_stage_texture(ss, browser_texture);
 			uint8_t *sdata;
 			uint32_t slinesize;
 			if (gs_stagesurface_map(ss, &sdata, &slinesize)) {
-				uint32_t mid = (cx/2)*4 + (cy/2)*slinesize;
-				blog(LOG_INFO, TAG "render #%d: browser center RGBA(%u,%u,%u,%u)",
-				     lt->render_count,
-				     sdata[mid], sdata[mid+1], sdata[mid+2], sdata[mid+3]);
+				/* Sample at 25% from edge and center */
+				uint32_t eidx = (cx/4)*4 + (cy/4)*slinesize;
+				uint32_t cidx = (cx/2)*4 + (cy/2)*slinesize;
+				blog(LOG_INFO, TAG "render #%d t=%.3f: "
+				     "edge(25%%): R=%u G=%u B=%u  "
+				     "center: R=%u G=%u B=%u",
+				     lt->render_count, t,
+				     sdata[eidx], sdata[eidx+1], sdata[eidx+2],
+				     sdata[cidx], sdata[cidx+1], sdata[cidx+2]);
 				gs_stagesurface_unmap(ss);
 			}
 			gs_stagesurface_destroy(ss);

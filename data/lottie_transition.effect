@@ -29,7 +29,14 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 	float4 sb = scene_b.Sample(texSampler, v_in.uv);
 	float4 br = browser_tex.Sample(texSampler, v_in.uv);
 
+	// Browser not ready yet (alpha=0) — show scene A to avoid flash
+	if (br.a < 0.5) {
+		return sa;
+	}
+
 	// Channel-packed: R=matteA, G=matteB, B=overlay_alpha, A=always 1
+	// matteA = how much scene A to show (white = full scene A)
+	// If matteB (G) is 0 (no [MatteB] layer), scene B = 1 - matteA
 	float ma = br.r;
 	float mb = br.g;
 
@@ -38,7 +45,19 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 		mb = 1.0 - mb;
 	}
 
-	float4 result = sa * ma + sb * mb;
+	float4 result;
+	if (mb < 0.004) {
+		// No matteB: simple alpha-matte transition
+		result = sa * ma + sb * (1.0 - ma);
+	} else {
+		// Dual-matte: normalize so they sum to <= 1.0
+		float total = ma + mb;
+		if (total > 1.0) {
+			ma = ma / total;
+			mb = mb / total;
+		}
+		result = sa * ma + sb * mb;
+	}
 
 	// Overlay: B channel is alpha/blend factor, rendered as white
 	float ov_alpha = br.b;
@@ -54,6 +73,10 @@ float4 PSMatteOnly(VertData v_in) : TARGET
 	float4 sb = scene_b.Sample(texSampler, v_in.uv);
 	float4 br = browser_tex.Sample(texSampler, v_in.uv);
 
+	if (br.a < 0.5) {
+		return sa;
+	}
+
 	float ma = br.r;
 	float mb = br.g;
 
@@ -62,7 +85,17 @@ float4 PSMatteOnly(VertData v_in) : TARGET
 		mb = 1.0 - mb;
 	}
 
-	float4 result = sa * ma + sb * mb;
+	float4 result;
+	if (mb < 0.004) {
+		result = sa * ma + sb * (1.0 - ma);
+	} else {
+		float total = ma + mb;
+		if (total > 1.0) {
+			ma = ma / total;
+			mb = mb / total;
+		}
+		result = sa * ma + sb * mb;
+	}
 	result.a = 1.0;
 
 	return result;
