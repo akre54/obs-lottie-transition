@@ -75,7 +75,7 @@ static bool build_html_file(struct lottie_transition *lt)
 	struct dstr html = {0};
 	dstr_cat(&html,
 		"<!DOCTYPE html><html><head><meta charset='UTF-8'>"
-		"<style>*{margin:0;padding:0;overflow:hidden;background:#000}"
+		"<style>*{margin:0;padding:0;overflow:hidden;background:#f00}"
 		"canvas{display:block}</style></head><body>"
 		"<canvas id='lottie-canvas'></canvas>");
 

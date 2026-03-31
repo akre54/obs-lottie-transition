@@ -59,9 +59,7 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 		result = sa * ma + sb * mb;
 	}
 
-	// Overlay: B channel is alpha/blend factor, rendered as white
-	float ov_alpha = br.b;
-	result.rgb = lerp(result.rgb, float3(1.0, 1.0, 1.0), ov_alpha);
+	// TODO: overlay support — needs color channel packing redesign
 	result.a = 1.0;
 
 	return result;
