@@ -6,6 +6,7 @@
     "lottie-web": "5.12.2"
   },
   "scripts": {
-    "setup": "cp node_modules/lottie-web/build/player/lottie.min.js ."
+    "setup": "cp node_modules/lottie-web/build/player/lottie.min.js .",
+    "test": "node --test test/all.test.js"
   }
 }

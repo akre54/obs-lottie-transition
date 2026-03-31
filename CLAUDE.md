@@ -43,6 +43,21 @@ codesign --force --deep --sign - "$HOME/Library/Application Support/obs-studio/p
 
 Then restart OBS. Select "Lottie Transition" in scene transition dropdown, configure a .json file.
 
+### Test Harness
+
+For fast local validation without OBS/libobs bootstrap:
+
+```bash
+cmake --preset tests
+cmake --build --preset tests
+ctest --preset tests
+```
+
+This runs:
+- native unit tests for `src/transform-decode.c`
+- Node-based tests for shared browser packing logic in `data/web/bridge-core.js`
+- contract tests against the real files in `examples/*.json`
+
 ## Critical: Private Browser Source Constraints (CEF/OBS)
 
 These are hard-won findings from extensive debugging. **Do not re-attempt failed approaches.**

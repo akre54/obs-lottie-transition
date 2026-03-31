@@ -65,6 +65,18 @@
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "warnings": {"dev": true, "deprecated": true}
+    },
+    {
+      "name": "tests",
+      "displayName": "Tests Only",
+      "description": "Configure the lightweight test harness without OBS plugin dependencies",
+      "binaryDir": "${sourceDir}/build_tests_make",
+      "generator": "Unix Makefiles",
+      "warnings": {"dev": true, "deprecated": true},
+      "cacheVariables": {
+        "BUILD_PLUGIN": false,
+        "BUILD_TESTING": true
+      }
     }
   ],
   "buildPresets": [
@@ -88,6 +100,23 @@
       "displayName": "Windows x64",
       "description": "Windows build for x64",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "tests",
+      "configurePreset": "tests",
+      "displayName": "Tests Only",
+      "description": "Build the lightweight native test target"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "tests",
+      "configurePreset": "tests",
+      "displayName": "Tests Only",
+      "description": "Run native and JS harness tests",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

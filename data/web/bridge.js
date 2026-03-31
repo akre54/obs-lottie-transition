@@ -3,6 +3,7 @@
 // All rendered into a single 1920x1080 canvas.
 
 (function() {
+  var BridgeCore = window.BridgeCore;
   var cfg = window._obsConfig || {};
   var params = {};
   try { params = new URLSearchParams(window.location.search); } catch(e) {}
@@ -28,14 +29,6 @@
   var totalFrames = 0;
   var frameRate = 30;
   var loadedCount = 0;
-
-  function filterLayers(jsonData, keepFn) {
-    var copy = JSON.parse(JSON.stringify(jsonData));
-    copy.layers = copy.layers.filter(function(layer) {
-      return keepFn(layer.nm || '');
-    });
-    return copy;
-  }
 
   function createInstance(name, animData) {
     var container = document.createElement('div');
@@ -90,13 +83,13 @@
     frameRate = jsonData.fr || 30;
     durationMs = (totalFrames / frameRate) * 1000;
 
-    var matteAData = filterLayers(jsonData, function(nm) {
+    var matteAData = BridgeCore.filterLayers(jsonData, function(nm) {
       return nm === '[MatteA]' || nm === '[SlotA]' || nm === '[SlotB]';
     });
-    var matteBData = filterLayers(jsonData, function(nm) {
+    var matteBData = BridgeCore.filterLayers(jsonData, function(nm) {
       return nm === '[MatteB]';
     });
-    var overlayData = filterLayers(jsonData, function(nm) {
+    var overlayData = BridgeCore.filterLayers(jsonData, function(nm) {
       return nm !== '[MatteA]' && nm !== '[MatteB]' && nm !== '[SlotA]' && nm !== '[SlotB]';
     });
 
@@ -121,52 +114,14 @@
     startPlayback();
   }
 
-  function extractTransform(element) {
-    if (!element) return { pos_x: 0, pos_y: 0, scale_x: 1, scale_y: 1, rotation: 0, opacity: 1 };
-    var mat = element.finalTransform.mat.props;
-    return {
-      pos_x: mat[12], pos_y: mat[13],
-      scale_x: Math.sqrt(mat[0]*mat[0] + mat[1]*mat[1]),
-      scale_y: Math.sqrt(mat[4]*mat[4] + mat[5]*mat[5]),
-      rotation: Math.atan2(mat[1], mat[0]) * (180 / Math.PI),
-      opacity: (function() { try { return element.finalTransform.mProp.o.v / 100; } catch(e) { return 1; } })()
-    };
-  }
-
-  function encodeFloat(value, min, max) {
-    var normalized = (value - min) / (max - min);
-    return Math.round(Math.max(0, Math.min(1, normalized)) * 65535);
-  }
-
-  // Encode slot transforms into bottom 2 pixel rows
   function encodeDataStrip(imageData) {
-    var transformA = extractTransform(slotA);
-    var transformB = extractTransform(slotB);
-    var data = imageData.data;
-    var w = imageData.width;
-    var ranges = [[-4096,4096],[-4096,4096],[0,10],[0,10],[-360,360],[0,1]];
-    var stripRow = (HEIGHT - 1) * w * 4; // last row
-
-    function encodeSlot(transform, pixelOffset) {
-      var values = [transform.pos_x, transform.pos_y, transform.scale_x, transform.scale_y, transform.rotation, transform.opacity];
-      for (var i = 0; i < 6; i += 2) {
-        var px = pixelOffset + (i / 2);
-        var idx = stripRow + px * 4;
-        var enc1 = encodeFloat(values[i], ranges[i][0], ranges[i][1]);
-        var enc2 = encodeFloat(values[i+1], ranges[i+1][0], ranges[i+1][1]);
-        data[idx + 0] = (enc1 >> 8) & 0xFF;
-        data[idx + 1] = enc1 & 0xFF;
-        data[idx + 2] = (enc2 >> 8) & 0xFF;
-        data[idx + 3] = enc2 & 0xFF;
-      }
-    }
-
-    encodeSlot(transformA, 0);
-    encodeSlot(transformB, 3);
-
-    // Magic marker at pixel 6
-    var magicIdx = stripRow + 6 * 4;
-    data[magicIdx] = 0xCA; data[magicIdx+1] = 0xFE; data[magicIdx+2] = 0xBA; data[magicIdx+3] = 0xBE;
+    BridgeCore.encodeDataStrip(
+      imageData,
+      imageData.width,
+      HEIGHT,
+      BridgeCore.extractTransform(slotA),
+      BridgeCore.extractTransform(slotB)
+    );
   }
 
   var _logCount = 0;
@@ -200,22 +155,7 @@
     var dA = pixA.data, dB = pixB.data, dO = pixO.data;
     var len = WIDTH * HEIGHT * 4;
 
-    for (var p = 0; p < len; p += 4) {
-      // MatteA: premultiplied luminance (white shape on transparent = alpha IS the matte)
-      var mA_a = dA[p+3];
-      var mA_lum = mA_a > 0 ? Math.round((dA[p]*0.299 + dA[p+1]*0.587 + dA[p+2]*0.114) * mA_a / 255) : 0;
-
-      var mB_a = dB[p+3];
-      var mB_lum = mB_a > 0 ? Math.round((dB[p]*0.299 + dB[p+1]*0.587 + dB[p+2]*0.114) * mB_a / 255) : 0;
-
-      // Overlay alpha
-      var ov_a = dO[p+3];
-
-      out[p+0] = mA_lum;   // R = matteA
-      out[p+1] = mB_lum;   // G = matteB
-      out[p+2] = ov_a;     // B = overlay alpha (blend factor)
-      out[p+3] = 255;      // A = always opaque (browser composites away alpha=0 pixels)
-    }
+    BridgeCore.packFrameData(dA, dB, dO, out);
 
     // Encode slot transforms into bottom row if slots exist
     if (hasSlots) {

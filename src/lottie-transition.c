@@ -45,23 +45,40 @@ static bool build_html_file(struct lottie_transition *lt)
 				 lottie_js, strlen(lottie_js), false);
 	bfree(lottie_js);
 
-	/* Read bridge.js for inlining (only ~8KB, safe for inline) */
+	/* Read bridge-core.js and bridge.js for inlining */
+	char *bridge_core_path = obs_module_file("web/bridge-core.js");
+	char *bridge_core_js = bridge_core_path ?
+		os_quick_read_utf8_file(bridge_core_path) : NULL;
+	bfree(bridge_core_path);
+	if (!bridge_core_js) {
+		blog(LOG_ERROR, TAG "Failed to read bridge-core.js");
+		return false;
+	}
+
 	char *bridge_path = obs_module_file("web/bridge.js");
 	char *bridge_js = bridge_path ? os_quick_read_utf8_file(bridge_path) : NULL;
 	bfree(bridge_path);
 	if (!bridge_js) {
+		bfree(bridge_core_js);
 		blog(LOG_ERROR, TAG "Failed to read bridge.js");
 		return false;
 	}
 
 	/* Escape </ as <\/ to prevent premature </script> closure */
 	struct dstr bridge_escaped = {0};
+	for (const char *p = bridge_core_js; *p; p++) {
+		if (p[0] == '<' && p[1] == '/')
+			{ dstr_cat(&bridge_escaped, "<\\/"); p++; }
+		else
+			dstr_catf(&bridge_escaped, "%c", *p);
+	}
 	for (const char *p = bridge_js; *p; p++) {
 		if (p[0] == '<' && p[1] == '/')
 			{ dstr_cat(&bridge_escaped, "<\\/"); p++; }
 		else
 			dstr_catf(&bridge_escaped, "%c", *p);
 	}
+	bfree(bridge_core_js);
 	bfree(bridge_js);
 
 	/* Read animation JSON */
