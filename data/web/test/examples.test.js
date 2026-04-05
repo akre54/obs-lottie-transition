@@ -5,6 +5,7 @@ const path = require('node:path');
 const childProcess = require('node:child_process');
 
 const BridgeCore = require('../bridge-core');
+const BackendPlan = require('../backend-plan');
 
 const examplesDir = path.resolve(__dirname, '../../..', 'examples');
 
@@ -33,34 +34,20 @@ test('all example animations have sane top-level timing and dimensions', () => {
 
 test('reserved layer routing for hybrid example stays stable', () => {
   const json = readExample('slide-and-mask.json');
+  const plan = BackendPlan.buildLayerPlan(json, 'browser');
 
-  const matteA = BridgeCore.filterLayers(json, (name) => {
-    return name === '[MatteA]' || name === '[SlotA]' || name === '[SlotB]';
-  });
-  const matteB = BridgeCore.filterLayers(json, (name) => name === '[MatteB]');
-  const overlay = BridgeCore.filterLayers(json, (name) => {
-    return name !== '[MatteA]' && name !== '[MatteB]' && name !== '[SlotA]' && name !== '[SlotB]';
-  });
-
-  assert.deepEqual(layerNames(matteA), ['[SlotA]', '[SlotB]', '[MatteA]']);
-  assert.deepEqual(layerNames(matteB), ['[MatteB]']);
-  assert.deepEqual(layerNames(overlay), ['decorative-bar']);
+  assert.deepEqual(layerNames(plan.matteA), ['[SlotA]', '[SlotB]', '[MatteA]']);
+  assert.deepEqual(layerNames(plan.matteB), ['[MatteB]']);
+  assert.deepEqual(layerNames(plan.overlay), ['decorative-bar']);
 });
 
 test('matte-only example keeps overlay empty and reserved layers intact', () => {
   const json = readExample('simple-wipe.json');
+  const plan = BackendPlan.buildLayerPlan(json, 'browser');
 
-  const matteA = BridgeCore.filterLayers(json, (name) => {
-    return name === '[MatteA]' || name === '[SlotA]' || name === '[SlotB]';
-  });
-  const matteB = BridgeCore.filterLayers(json, (name) => name === '[MatteB]');
-  const overlay = BridgeCore.filterLayers(json, (name) => {
-    return name !== '[MatteA]' && name !== '[MatteB]' && name !== '[SlotA]' && name !== '[SlotB]';
-  });
-
-  assert.deepEqual(layerNames(matteA), ['[MatteA]']);
-  assert.deepEqual(layerNames(matteB), ['[MatteB]']);
-  assert.deepEqual(layerNames(overlay), []);
+  assert.deepEqual(layerNames(plan.matteA), ['[MatteA]']);
+  assert.deepEqual(layerNames(plan.matteB), ['[MatteB]']);
+  assert.deepEqual(layerNames(plan.overlay), []);
 });
 
 test('overlay-bearing example does not accidentally introduce MatteB', () => {

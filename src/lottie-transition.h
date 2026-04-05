@@ -5,6 +5,7 @@
 #include <graphics/graphics.h>
 #include <graphics/matrix4.h>
 #include <util/threading.h>
+#include "lottie-backend.h"
 #include "transform-decode.h"
 
 #define DATA_STRIP_HEIGHT 2
@@ -35,6 +36,11 @@ struct lottie_transition {
 	gs_eparam_t *ep_scene_b;
 	gs_eparam_t *ep_browser_tex;
 	gs_eparam_t *ep_invert_matte;
+	gs_eparam_t *ep_scene_size;
+	gs_eparam_t *ep_slot_a_pos_scale;
+	gs_eparam_t *ep_slot_a_rot_opacity;
+	gs_eparam_t *ep_slot_b_pos_scale;
+	gs_eparam_t *ep_slot_b_rot_opacity;
 
 	/* Transition state */
 	bool active;
@@ -53,9 +59,24 @@ struct lottie_transition {
 
 	/* Properties */
 	char *lottie_file;
+	enum lt_backend_type requested_backend;
+	enum lt_backend_type effective_backend;
+	void *thorvg_backend;
 	bool invert_matte;
 	bool scripts_injected;
 	bool lottie_data_injected;
+
+	/* E2E harness telemetry */
+	bool e2e_enabled;
+	bool e2e_trace;
+	bool e2e_capture_frames;
+	char *e2e_capture_dir;
+	uint32_t e2e_sample_mask;
+	int e2e_transition_index;
+	uint8_t *e2e_prev_sample;
+	size_t e2e_prev_sample_size;
+	uint32_t e2e_prev_width;
+	uint32_t e2e_prev_height;
 
 	/* Thread safety */
 	pthread_mutex_t mutex;

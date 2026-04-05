@@ -4,6 +4,7 @@
 
 (function() {
   var BridgeCore = window.BridgeCore;
+  var BackendPlan = window.BackendPlan;
   var cfg = window._obsConfig || {};
   var params = {};
   try { params = new URLSearchParams(window.location.search); } catch(e) {}
@@ -83,15 +84,10 @@
     frameRate = jsonData.fr || 30;
     durationMs = (totalFrames / frameRate) * 1000;
 
-    var matteAData = BridgeCore.filterLayers(jsonData, function(nm) {
-      return nm === '[MatteA]' || nm === '[SlotA]' || nm === '[SlotB]';
-    });
-    var matteBData = BridgeCore.filterLayers(jsonData, function(nm) {
-      return nm === '[MatteB]';
-    });
-    var overlayData = BridgeCore.filterLayers(jsonData, function(nm) {
-      return nm !== '[MatteA]' && nm !== '[MatteB]' && nm !== '[SlotA]' && nm !== '[SlotB]';
-    });
+    var plan = BackendPlan.buildLayerPlan(jsonData, 'browser');
+    var matteAData = plan.matteA;
+    var matteBData = plan.matteB;
+    var overlayData = plan.overlay;
 
     console.error('[bridge] Creating 3 instances: matteA=' + matteAData.layers.length +
       ' matteB=' + matteBData.layers.length + ' overlay=' + overlayData.layers.length + ' layers');

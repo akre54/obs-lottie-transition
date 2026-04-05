@@ -3,6 +3,11 @@ uniform texture2d scene_a;
 uniform texture2d scene_b;
 uniform texture2d browser_tex;
 uniform bool invert_matte;
+uniform float2 scene_size;
+uniform float4 slot_a_pos_scale;
+uniform float2 slot_a_rot_opacity;
+uniform float4 slot_b_pos_scale;
+uniform float2 slot_b_rot_opacity;
 
 sampler_state texSampler {
 	Filter   = Linear;
@@ -23,10 +28,51 @@ VertData VSDefault(VertData v_in)
 	return vert_out;
 }
 
+float2 TransformedSceneUv(float2 uv, float4 pos_scale, float2 rot_opacity)
+{
+	float2 center = scene_size * 0.5;
+	float2 dest_px = uv * scene_size;
+	float2 local = dest_px - pos_scale.xy;
+	float angle = radians(rot_opacity.x);
+	float s = sin(-angle);
+	float c = cos(-angle);
+	float2 unrotated = float2(
+		local.x * c - local.y * s,
+		local.x * s + local.y * c
+	);
+	float2 safe_scale = max(abs(pos_scale.zw), float2(0.0001, 0.0001));
+	float2 source_px = center + (unrotated / safe_scale);
+	return source_px / scene_size;
+}
+
+float4 SampleSceneA(float2 uv)
+{
+	float2 source_uv = TransformedSceneUv(uv, slot_a_pos_scale, slot_a_rot_opacity);
+	if (source_uv.x < 0.0 || source_uv.x > 1.0 ||
+	    source_uv.y < 0.0 || source_uv.y > 1.0) {
+		return float4(0.0, 0.0, 0.0, 0.0);
+	}
+
+	float4 sample = scene_a.Sample(texSampler, source_uv);
+	return sample * saturate(slot_a_rot_opacity.y);
+}
+
+float4 SampleSceneB(float2 uv)
+{
+	float2 source_uv = TransformedSceneUv(uv, slot_b_pos_scale, slot_b_rot_opacity);
+	if (source_uv.x < 0.0 || source_uv.x > 1.0 ||
+	    source_uv.y < 0.0 || source_uv.y > 1.0) {
+		return float4(0.0, 0.0, 0.0, 0.0);
+	}
+
+	float4 sample = scene_b.Sample(texSampler, source_uv);
+	return sample * saturate(slot_b_rot_opacity.y);
+}
+
 float4 PSMatteComposite(VertData v_in) : TARGET
 {
-	float4 sa = scene_a.Sample(texSampler, v_in.uv);
-	float4 sb = scene_b.Sample(texSampler, v_in.uv);
+	float4 sa = SampleSceneA(v_in.uv);
+	float4 sb = SampleSceneB(v_in.uv);
 	float4 br = browser_tex.Sample(texSampler, v_in.uv);
 
 	// Browser not ready yet (alpha=0) — show scene A to avoid flash
@@ -47,7 +93,11 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 
 	float4 result;
 	if (mb < 0.004) {
-		result = sa * ma + sb * (1.0 - ma);
+		if (ma < 0.004) {
+			result = sa.a >= sb.a ? sa : sb;
+		} else {
+			result = sa * ma + sb * (1.0 - ma);
+		}
 	} else {
 		float total = ma + mb;
 		if (total > 1.0) {
@@ -63,8 +113,8 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 
 float4 PSMatteOnly(VertData v_in) : TARGET
 {
-	float4 sa = scene_a.Sample(texSampler, v_in.uv);
-	float4 sb = scene_b.Sample(texSampler, v_in.uv);
+	float4 sa = SampleSceneA(v_in.uv);
+	float4 sb = SampleSceneB(v_in.uv);
 	float4 br = browser_tex.Sample(texSampler, v_in.uv);
 
 	if (br.a < 0.5) {
@@ -81,7 +131,11 @@ float4 PSMatteOnly(VertData v_in) : TARGET
 
 	float4 result;
 	if (mb < 0.004) {
-		result = sa * ma + sb * (1.0 - ma);
+		if (ma < 0.004) {
+			result = sa.a >= sb.a ? sa : sb;
+		} else {
+			result = sa * ma + sb * (1.0 - ma);
+		}
 	} else {
 		float total = ma + mb;
 		if (total > 1.0) {

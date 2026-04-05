@@ -1,9 +1,17 @@
 #include "lottie-transition.h"
 
+#include <inttypes.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+
 #include <obs-module.h>
 #include <util/dstr.h>
 #include <util/platform.h>
 #include <util/base.h>
+#include "lottie-thorvg.h"
 
 OBS_DECLARE_MODULE()
 
@@ -14,6 +22,538 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-lottie-transition", "en-US")
 #define TAG "[lottie-transition] "
 
 static void lt_update(void *data, obs_data_t *settings);
+static void create_render_backend(struct lottie_transition *lt);
+static void destroy_render_backend(struct lottie_transition *lt);
+static void draw_texture_direct(gs_texture_t *texture, uint32_t cx, uint32_t cy);
+static void draw_matte_composite(struct lottie_transition *lt, gs_texture_t *scene_a,
+				 gs_texture_t *scene_b, gs_texture_t *matte,
+				 uint32_t cx, uint32_t cy);
+
+static bool lt_env_truthy(const char *name)
+{
+	const char *value = getenv(name);
+	if (!value || !*value)
+		return false;
+	return strcmp(value, "0") != 0 && strcasecmp(value, "false") != 0 &&
+	       strcasecmp(value, "no") != 0;
+}
+
+static void lt_json_escape(struct dstr *out, const char *value)
+{
+	const unsigned char *p = (const unsigned char *)(value ? value : "");
+
+	for (; *p; p++) {
+		switch (*p) {
+		case '\\':
+			dstr_cat(out, "\\\\");
+			break;
+		case '"':
+			dstr_cat(out, "\\\"");
+			break;
+		case '\n':
+			dstr_cat(out, "\\n");
+			break;
+		case '\r':
+			dstr_cat(out, "\\r");
+			break;
+		case '\t':
+			dstr_cat(out, "\\t");
+			break;
+		default:
+			if (*p < 0x20)
+				dstr_catf(out, "\\u%04x", (unsigned int)*p);
+			else
+				dstr_catf(out, "%c", *p);
+		}
+	}
+}
+
+static void lt_e2e_write_json_line(struct lottie_transition *lt, const char *event,
+				       const char *extra_json)
+{
+	if (!lt->e2e_enabled || !lt->e2e_trace || !lt->e2e_capture_dir)
+		return;
+
+	struct dstr path = {0};
+	dstr_catf(&path, "%s/plugin-events.jsonl", lt->e2e_capture_dir);
+	FILE *file = fopen(path.array, "ab");
+	if (!file) {
+		dstr_free(&path);
+		return;
+	}
+
+	struct dstr line = {0};
+	struct dstr escaped_file = {0};
+	struct dstr escaped_requested = {0};
+	struct dstr escaped_effective = {0};
+
+	lt_json_escape(&escaped_file, lt->lottie_file ? lt->lottie_file : "");
+	lt_json_escape(&escaped_requested,
+		       lt_backend_name(lt->requested_backend));
+	lt_json_escape(&escaped_effective,
+		       lt_backend_name(lt->effective_backend));
+
+	dstr_catf(&line,
+		  "{\"ts_ns\":%" PRIu64
+		  ",\"event\":\"%s\",\"transition_index\":%d,"
+		  "\"render_count\":%d,\"tick_count\":%d,\"progress\":%.6f,"
+		  "\"backend_requested\":\"%s\",\"backend_effective\":\"%s\","
+		  "\"lottie_file\":\"%s\"",
+		  os_gettime_ns(), event, lt->e2e_transition_index,
+		  lt->render_count, lt->tick_count, lt->progress,
+		  escaped_requested.array, escaped_effective.array,
+		  escaped_file.array);
+	if (extra_json && *extra_json)
+		dstr_catf(&line, ",%s", extra_json);
+	dstr_cat(&line, "}\n");
+
+	fwrite(line.array, 1, line.len, file);
+	fclose(file);
+
+	dstr_free(&escaped_effective);
+	dstr_free(&escaped_requested);
+	dstr_free(&escaped_file);
+	dstr_free(&line);
+	dstr_free(&path);
+}
+
+static void lt_e2e_init(struct lottie_transition *lt)
+{
+	const char *capture_dir = getenv("LT_E2E_CAPTURE_DIR");
+
+	if (!capture_dir || !*capture_dir)
+		return;
+
+	lt->e2e_enabled = true;
+	lt->e2e_trace = lt_env_truthy("LT_E2E_TRACE");
+	lt->e2e_capture_frames = lt_env_truthy("LT_E2E_CAPTURE_FRAMES");
+	lt->e2e_capture_dir = bstrdup(capture_dir);
+
+	os_mkdirs(lt->e2e_capture_dir);
+	if (lt->e2e_capture_frames) {
+		struct dstr frames_dir = {0};
+		dstr_catf(&frames_dir, "%s/frames", lt->e2e_capture_dir);
+		os_mkdirs(frames_dir.array);
+		dstr_free(&frames_dir);
+	}
+
+	lt_e2e_write_json_line(lt, "e2e_init", "\"capture_ready\":true");
+}
+
+static void lt_e2e_reset_transition_state(struct lottie_transition *lt)
+{
+	lt->e2e_sample_mask = 0;
+	bfree(lt->e2e_prev_sample);
+	lt->e2e_prev_sample = NULL;
+	lt->e2e_prev_sample_size = 0;
+	lt->e2e_prev_width = 0;
+	lt->e2e_prev_height = 0;
+}
+
+static int lt_e2e_bucket_for_progress(float t)
+{
+	static const int buckets[] = {0, 25, 50, 75, 100};
+	const float tolerance = 0.08f;
+	int best_bucket = -1;
+	float best_distance = 1.0f;
+
+	for (size_t i = 0; i < sizeof(buckets) / sizeof(buckets[0]); i++) {
+		float bucket_t = (float)buckets[i] / 100.0f;
+		float distance = fabsf(t - bucket_t);
+		if (distance <= tolerance && distance < best_distance) {
+			best_distance = distance;
+			best_bucket = buckets[i];
+		}
+	}
+
+	return best_bucket;
+}
+
+static bool lt_e2e_should_sample(struct lottie_transition *lt, float t, int *bucket_percent)
+{
+	int bucket = lt_e2e_bucket_for_progress(t);
+	uint32_t bit;
+
+	if (!lt->e2e_enabled || bucket < 0)
+		return false;
+
+	bit = 1u << (unsigned int)(bucket / 25);
+	if ((lt->e2e_sample_mask & bit) != 0)
+		return false;
+
+	lt->e2e_sample_mask |= bit;
+	if (bucket_percent)
+		*bucket_percent = bucket;
+	return true;
+}
+
+static bool lt_write_ppm_file(const char *path, const uint8_t *pixels,
+			      uint32_t width, uint32_t height)
+{
+	FILE *file = fopen(path, "wb");
+	if (!file)
+		return false;
+
+	fprintf(file, "P6\n%u %u\n255\n", width, height);
+	for (uint32_t y = 0; y < height; y++) {
+		for (uint32_t x = 0; x < width; x++) {
+			const uint8_t *pixel = pixels + ((size_t)y * width + x) * 4;
+			fwrite(pixel, 1, 3, file);
+		}
+	}
+
+	fclose(file);
+	return true;
+}
+
+static void lt_e2e_capture_sample(struct lottie_transition *lt, gs_texture_t *texture,
+				  uint32_t cx, uint32_t cy, int bucket_percent)
+{
+	if (!lt->e2e_enabled || !texture || !lt->e2e_capture_dir)
+		return;
+
+	gs_stagesurf_t *surface = gs_stagesurface_create(cx, cy, GS_RGBA);
+	if (!surface)
+		return;
+
+	gs_stage_texture(surface, texture);
+
+	uint8_t *mapped = NULL;
+	uint32_t linesize = 0;
+	if (!gs_stagesurface_map(surface, &mapped, &linesize)) {
+		gs_stagesurface_destroy(surface);
+		return;
+	}
+
+	size_t pixel_count = (size_t)cx * cy;
+	size_t rgba_size = pixel_count * 4;
+	uint8_t *copy = bzalloc(rgba_size);
+	double sum_r = 0.0;
+	double sum_g = 0.0;
+	double sum_b = 0.0;
+	double sum_a = 0.0;
+	size_t nonblack_count = 0;
+	size_t nonzero_alpha_count = 0;
+	double delta_sum = 0.0;
+	bool has_prev = lt->e2e_prev_sample &&
+			lt->e2e_prev_sample_size == rgba_size &&
+			lt->e2e_prev_width == cx &&
+			lt->e2e_prev_height == cy;
+
+	for (uint32_t y = 0; y < cy; y++) {
+		const uint8_t *src_row = mapped + (size_t)y * linesize;
+		uint8_t *dst_row = copy + (size_t)y * cx * 4;
+
+		for (uint32_t x = 0; x < cx; x++) {
+			size_t offset = (size_t)x * 4;
+			size_t absolute = ((size_t)y * cx + x) * 4;
+			uint8_t r = src_row[offset + 0];
+			uint8_t g = src_row[offset + 1];
+			uint8_t b = src_row[offset + 2];
+			uint8_t a = src_row[offset + 3];
+
+			dst_row[offset + 0] = r;
+			dst_row[offset + 1] = g;
+			dst_row[offset + 2] = b;
+			dst_row[offset + 3] = a;
+
+			sum_r += r;
+			sum_g += g;
+			sum_b += b;
+			sum_a += a;
+			if ((int)r + (int)g + (int)b > 24)
+				nonblack_count++;
+			if (a > 0)
+				nonzero_alpha_count++;
+			if (has_prev) {
+				delta_sum += fabs((double)r - lt->e2e_prev_sample[absolute + 0]);
+				delta_sum += fabs((double)g - lt->e2e_prev_sample[absolute + 1]);
+				delta_sum += fabs((double)b - lt->e2e_prev_sample[absolute + 2]);
+			}
+		}
+	}
+
+	gs_stagesurface_unmap(surface);
+	gs_stagesurface_destroy(surface);
+
+	double mean_r = sum_r / (double)pixel_count;
+	double mean_g = sum_g / (double)pixel_count;
+	double mean_b = sum_b / (double)pixel_count;
+	double mean_a = sum_a / (double)pixel_count;
+	double nonblack_ratio = (double)nonblack_count / (double)pixel_count;
+	double nonzero_alpha_ratio = (double)nonzero_alpha_count / (double)pixel_count;
+	double mean_abs_rgb_delta = has_prev
+		? delta_sum / ((double)pixel_count * 3.0)
+		: 0.0;
+
+	struct dstr frame_rel = {0};
+	if (lt->e2e_capture_frames) {
+		struct dstr frame_path = {0};
+		dstr_catf(&frame_rel, "frames/trigger-%02d-p%03d.ppm",
+			  lt->e2e_transition_index, bucket_percent);
+		dstr_catf(&frame_path, "%s/%s", lt->e2e_capture_dir, frame_rel.array);
+		lt_write_ppm_file(frame_path.array, copy, cx, cy);
+		dstr_free(&frame_path);
+	}
+
+	bfree(lt->e2e_prev_sample);
+	lt->e2e_prev_sample = copy;
+	lt->e2e_prev_sample_size = rgba_size;
+	lt->e2e_prev_width = cx;
+	lt->e2e_prev_height = cy;
+
+	struct dstr extra = {0};
+	dstr_catf(&extra,
+		  "\"bucket_percent\":%d,\"width\":%u,\"height\":%u,"
+		  "\"mean_r\":%.4f,\"mean_g\":%.4f,\"mean_b\":%.4f,\"mean_a\":%.4f,"
+		  "\"nonblack_ratio\":%.6f,\"nonzero_alpha_ratio\":%.6f,"
+		  "\"mean_abs_rgb_delta\":%.6f",
+		  bucket_percent, cx, cy, mean_r, mean_g, mean_b, mean_a,
+		  nonblack_ratio, nonzero_alpha_ratio, mean_abs_rgb_delta);
+	if (lt->has_transforms) {
+		dstr_catf(&extra,
+			  ",\"slot_a\":{\"pos_x\":%.4f,\"pos_y\":%.4f,\"scale_x\":%.4f,"
+			  "\"scale_y\":%.4f,\"rotation\":%.4f,\"opacity\":%.4f},"
+			  "\"slot_b\":{\"pos_x\":%.4f,\"pos_y\":%.4f,\"scale_x\":%.4f,"
+			  "\"scale_y\":%.4f,\"rotation\":%.4f,\"opacity\":%.4f}",
+			  lt->transform_a.pos_x, lt->transform_a.pos_y,
+			  lt->transform_a.scale_x, lt->transform_a.scale_y,
+			  lt->transform_a.rotation, lt->transform_a.opacity,
+			  lt->transform_b.pos_x, lt->transform_b.pos_y,
+			  lt->transform_b.scale_x, lt->transform_b.scale_y,
+			  lt->transform_b.rotation, lt->transform_b.opacity);
+	}
+	if (frame_rel.len) {
+		struct dstr escaped = {0};
+		lt_json_escape(&escaped, frame_rel.array);
+		dstr_catf(&extra, ",\"frame_path\":\"%s\"", escaped.array);
+		dstr_free(&escaped);
+	}
+
+	lt_e2e_write_json_line(lt, "render_sample", extra.array);
+	dstr_free(&extra);
+	dstr_free(&frame_rel);
+}
+
+static void draw_texture_direct(gs_texture_t *texture, uint32_t cx, uint32_t cy)
+{
+	gs_effect_t *effect;
+	gs_eparam_t *image;
+	gs_technique_t *tech;
+
+	if (!texture)
+		return;
+
+	effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	image = gs_effect_get_param_by_name(effect, "image");
+	gs_effect_set_texture(image, texture);
+
+	tech = gs_effect_get_technique(effect, "Draw");
+	gs_technique_begin(tech);
+	gs_technique_begin_pass(tech, 0);
+	gs_draw_sprite(texture, 0, cx, cy);
+	gs_technique_end_pass(tech);
+	gs_technique_end(tech);
+}
+
+struct lt_texture_metrics {
+	double mean_r;
+	double mean_g;
+	double mean_b;
+	double mean_a;
+	double nonblack_ratio;
+	double nonzero_alpha_ratio;
+};
+
+static bool lt_collect_texture_metrics(gs_texture_t *texture, uint32_t cx, uint32_t cy,
+				       struct lt_texture_metrics *metrics)
+{
+	if (!texture || !metrics)
+		return false;
+
+	gs_stagesurf_t *surface = gs_stagesurface_create(cx, cy, GS_RGBA);
+	if (!surface)
+		return false;
+
+	gs_stage_texture(surface, texture);
+
+	uint8_t *mapped = NULL;
+	uint32_t linesize = 0;
+	if (!gs_stagesurface_map(surface, &mapped, &linesize)) {
+		gs_stagesurface_destroy(surface);
+		return false;
+	}
+
+	size_t pixel_count = (size_t)cx * cy;
+	double sum_r = 0.0;
+	double sum_g = 0.0;
+	double sum_b = 0.0;
+	double sum_a = 0.0;
+	size_t nonblack_count = 0;
+	size_t nonzero_alpha_count = 0;
+
+	for (uint32_t y = 0; y < cy; y++) {
+		const uint8_t *src_row = mapped + (size_t)y * linesize;
+		for (uint32_t x = 0; x < cx; x++) {
+			size_t offset = (size_t)x * 4;
+			uint8_t r = src_row[offset + 0];
+			uint8_t g = src_row[offset + 1];
+			uint8_t b = src_row[offset + 2];
+			uint8_t a = src_row[offset + 3];
+			sum_r += r;
+			sum_g += g;
+			sum_b += b;
+			sum_a += a;
+			if ((int)r + (int)g + (int)b > 24)
+				nonblack_count++;
+			if (a > 0)
+				nonzero_alpha_count++;
+		}
+	}
+
+	gs_stagesurface_unmap(surface);
+	gs_stagesurface_destroy(surface);
+
+	metrics->mean_r = sum_r / (double)pixel_count;
+	metrics->mean_g = sum_g / (double)pixel_count;
+	metrics->mean_b = sum_b / (double)pixel_count;
+	metrics->mean_a = sum_a / (double)pixel_count;
+	metrics->nonblack_ratio = (double)nonblack_count / (double)pixel_count;
+	metrics->nonzero_alpha_ratio = (double)nonzero_alpha_count / (double)pixel_count;
+	return true;
+}
+
+static void draw_matte_composite(struct lottie_transition *lt, gs_texture_t *scene_a,
+				 gs_texture_t *scene_b, gs_texture_t *matte,
+				 uint32_t cx, uint32_t cy)
+{
+	struct slot_transform slot_a = lt->transform_a;
+	struct slot_transform slot_b = lt->transform_b;
+	struct vec2 scene_size;
+	struct vec4 slot_a_pos_scale;
+	struct vec2 slot_a_rot_opacity;
+	struct vec4 slot_b_pos_scale;
+	struct vec2 slot_b_rot_opacity;
+
+	if (!lt->has_transforms) {
+		slot_transform_identity(&slot_a);
+		slot_transform_identity(&slot_b);
+		slot_a.pos_x = (float)cx * 0.5f;
+		slot_a.pos_y = (float)cy * 0.5f;
+		slot_b.pos_x = (float)cx * 0.5f;
+		slot_b.pos_y = (float)cy * 0.5f;
+	}
+
+	gs_effect_set_texture(lt->ep_scene_a, scene_a);
+	gs_effect_set_texture(lt->ep_scene_b, scene_b);
+	gs_effect_set_texture(lt->ep_browser_tex, matte);
+	gs_effect_set_bool(lt->ep_invert_matte, lt->invert_matte);
+	vec2_set(&scene_size, (float)cx, (float)cy);
+	vec4_set(&slot_a_pos_scale, slot_a.pos_x, slot_a.pos_y,
+		 slot_a.scale_x, slot_a.scale_y);
+	vec2_set(&slot_a_rot_opacity, slot_a.rotation, slot_a.opacity);
+	vec4_set(&slot_b_pos_scale, slot_b.pos_x, slot_b.pos_y,
+		 slot_b.scale_x, slot_b.scale_y);
+	vec2_set(&slot_b_rot_opacity, slot_b.rotation, slot_b.opacity);
+	gs_effect_set_vec2(lt->ep_scene_size, &scene_size);
+	gs_effect_set_vec4(lt->ep_slot_a_pos_scale, &slot_a_pos_scale);
+	gs_effect_set_vec2(lt->ep_slot_a_rot_opacity, &slot_a_rot_opacity);
+	gs_effect_set_vec4(lt->ep_slot_b_pos_scale, &slot_b_pos_scale);
+	gs_effect_set_vec2(lt->ep_slot_b_rot_opacity, &slot_b_rot_opacity);
+
+	gs_technique_t *tech = gs_effect_get_technique(lt->effect, "MatteComposite");
+	gs_technique_begin(tech);
+	gs_technique_begin_pass(tech, 0);
+	gs_draw_sprite(matte, 0, cx, cy);
+	gs_technique_end_pass(tech);
+	gs_technique_end(tech);
+}
+
+static void render_and_optionally_capture_composite(struct lottie_transition *lt,
+						    gs_texture_t *scene_a,
+						    gs_texture_t *scene_b,
+						    gs_texture_t *matte,
+						    uint32_t cx, uint32_t cy,
+						    float t)
+{
+	if (!lt->e2e_enabled || !matte) {
+		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+		return;
+	}
+
+	int sample_bucket = -1;
+	if (!lt_e2e_should_sample(lt, t, &sample_bucket)) {
+		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+		return;
+	}
+
+	gs_texrender_t *capture = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+	if (!capture) {
+		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+		return;
+	}
+
+	if (!gs_texrender_begin(capture, cx, cy)) {
+		gs_texrender_destroy(capture);
+		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+		return;
+	}
+
+	if (lt->e2e_trace) {
+		struct lt_texture_metrics scene_a_metrics = {0};
+		struct lt_texture_metrics scene_b_metrics = {0};
+		struct lt_texture_metrics matte_metrics = {0};
+		bool got_a = lt_collect_texture_metrics(scene_a, cx, cy, &scene_a_metrics);
+		bool got_b = lt_collect_texture_metrics(scene_b, cx, cy, &scene_b_metrics);
+		bool got_m = lt_collect_texture_metrics(matte, cx, cy, &matte_metrics);
+		if (got_a || got_b || got_m) {
+			struct dstr extra = {0};
+			dstr_catf(&extra, "\"bucket_percent\":%d", sample_bucket);
+			if (got_a) {
+				dstr_catf(&extra,
+					  ",\"scene_a_metrics\":{\"mean_r\":%.4f,\"mean_g\":%.4f,"
+					  "\"mean_b\":%.4f,\"mean_a\":%.4f,\"nonblack_ratio\":%.6f}",
+					  scene_a_metrics.mean_r, scene_a_metrics.mean_g,
+					  scene_a_metrics.mean_b, scene_a_metrics.mean_a,
+					  scene_a_metrics.nonblack_ratio);
+			}
+			if (got_b) {
+				dstr_catf(&extra,
+					  ",\"scene_b_metrics\":{\"mean_r\":%.4f,\"mean_g\":%.4f,"
+					  "\"mean_b\":%.4f,\"mean_a\":%.4f,\"nonblack_ratio\":%.6f}",
+					  scene_b_metrics.mean_r, scene_b_metrics.mean_g,
+					  scene_b_metrics.mean_b, scene_b_metrics.mean_a,
+					  scene_b_metrics.nonblack_ratio);
+			}
+			if (got_m) {
+				dstr_catf(&extra,
+					  ",\"matte_metrics\":{\"mean_r\":%.4f,\"mean_g\":%.4f,"
+					  "\"mean_b\":%.4f,\"mean_a\":%.4f,\"nonblack_ratio\":%.6f}",
+					  matte_metrics.mean_r, matte_metrics.mean_g,
+					  matte_metrics.mean_b, matte_metrics.mean_a,
+					  matte_metrics.nonblack_ratio);
+			}
+			lt_e2e_write_json_line(lt, "input_sample", extra.array);
+			dstr_free(&extra);
+		}
+	}
+
+	struct vec4 clear_color;
+	vec4_zero(&clear_color);
+	gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
+	draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+	gs_texrender_end(capture);
+
+	gs_texture_t *capture_texture = gs_texrender_get_texture(capture);
+	if (capture_texture) {
+		lt_e2e_capture_sample(lt, capture_texture, cx, cy, sample_bucket);
+		draw_texture_direct(capture_texture, cx, cy);
+	} else {
+		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+	}
+
+	gs_texrender_destroy(capture);
+}
 
 /* ------------------------------------------------------------------ */
 /* Helper: build HTML file for browser source (written to temp file)   */
@@ -45,12 +585,22 @@ static bool build_html_file(struct lottie_transition *lt)
 				 lottie_js, strlen(lottie_js), false);
 	bfree(lottie_js);
 
-	/* Read bridge-core.js and bridge.js for inlining */
+	/* Read backend-plan.js, bridge-core.js and bridge.js for inlining */
+	char *backend_plan_path = obs_module_file("web/backend-plan.js");
+	char *backend_plan_js = backend_plan_path ?
+		os_quick_read_utf8_file(backend_plan_path) : NULL;
+	bfree(backend_plan_path);
+	if (!backend_plan_js) {
+		blog(LOG_ERROR, TAG "Failed to read backend-plan.js");
+		return false;
+	}
+
 	char *bridge_core_path = obs_module_file("web/bridge-core.js");
 	char *bridge_core_js = bridge_core_path ?
 		os_quick_read_utf8_file(bridge_core_path) : NULL;
 	bfree(bridge_core_path);
 	if (!bridge_core_js) {
+		bfree(backend_plan_js);
 		blog(LOG_ERROR, TAG "Failed to read bridge-core.js");
 		return false;
 	}
@@ -59,6 +609,7 @@ static bool build_html_file(struct lottie_transition *lt)
 	char *bridge_js = bridge_path ? os_quick_read_utf8_file(bridge_path) : NULL;
 	bfree(bridge_path);
 	if (!bridge_js) {
+		bfree(backend_plan_js);
 		bfree(bridge_core_js);
 		blog(LOG_ERROR, TAG "Failed to read bridge.js");
 		return false;
@@ -66,12 +617,19 @@ static bool build_html_file(struct lottie_transition *lt)
 
 	/* Escape </ as <\/ to prevent premature </script> closure */
 	struct dstr bridge_escaped = {0};
+	for (const char *p = backend_plan_js; *p; p++) {
+		if (p[0] == '<' && p[1] == '/')
+			{ dstr_cat(&bridge_escaped, "<\\/"); p++; }
+		else
+			dstr_catf(&bridge_escaped, "%c", *p);
+	}
 	for (const char *p = bridge_core_js; *p; p++) {
 		if (p[0] == '<' && p[1] == '/')
 			{ dstr_cat(&bridge_escaped, "<\\/"); p++; }
 		else
 			dstr_catf(&bridge_escaped, "%c", *p);
 	}
+	bfree(backend_plan_js);
 	for (const char *p = bridge_js; *p; p++) {
 		if (p[0] == '<' && p[1] == '/')
 			{ dstr_cat(&bridge_escaped, "<\\/"); p++; }
@@ -210,6 +768,54 @@ static void destroy_browser_source(struct lottie_transition *lt)
 	}
 }
 
+static void create_thorvg_backend(struct lottie_transition *lt)
+{
+	if (lt->thorvg_backend)
+		return;
+
+	lt->thorvg_backend = lt_thorvg_create(lt->lottie_file, lt->cx, lt->cy);
+	if (!lt->thorvg_backend) {
+		blog(LOG_ERROR, TAG "Failed to create ThorVG backend");
+		return;
+	}
+
+	blog(LOG_INFO, TAG "Created ThorVG backend: size=%ux%u", lt->cx, lt->cy);
+}
+
+static void destroy_thorvg_backend(struct lottie_transition *lt)
+{
+	if (lt->thorvg_backend) {
+		lt_thorvg_destroy(lt->thorvg_backend);
+		lt->thorvg_backend = NULL;
+	}
+}
+
+static void create_render_backend(struct lottie_transition *lt)
+{
+	switch (lt->effective_backend) {
+	case LT_BACKEND_THORVG:
+		create_thorvg_backend(lt);
+		break;
+	case LT_BACKEND_BROWSER:
+	default:
+		create_browser_source(lt);
+		break;
+	}
+}
+
+static void destroy_render_backend(struct lottie_transition *lt)
+{
+	switch (lt->effective_backend) {
+	case LT_BACKEND_THORVG:
+		destroy_thorvg_backend(lt);
+		break;
+	case LT_BACKEND_BROWSER:
+	default:
+		destroy_browser_source(lt);
+		break;
+	}
+}
+
 /* ------------------------------------------------------------------ */
 /* Helper: GPU resource management                                     */
 /* ------------------------------------------------------------------ */
@@ -313,49 +919,6 @@ static void decode_transforms_from_texture(struct lottie_transition *lt,
 }
 
 /* ------------------------------------------------------------------ */
-/* Helper: render a scene with transforms into a texrender             */
-/* ------------------------------------------------------------------ */
-
-static void render_scene_transformed(gs_texrender_t *tr,
-				     obs_source_t *transition,
-				     bool scene_b,
-				     const struct slot_transform *xform,
-				     uint32_t cx, uint32_t cy)
-{
-	if (!gs_texrender_begin(tr, cx, cy))
-		return;
-
-	struct vec4 clear_color;
-	vec4_zero(&clear_color);
-	gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
-
-	float center_x = (float)cx * 0.5f;
-	float center_y = (float)cy * 0.5f;
-
-	gs_matrix_push();
-	gs_matrix_identity();
-
-	float offset_x = xform->pos_x - center_x;
-	float offset_y = xform->pos_y - center_y;
-
-	gs_matrix_translate3f(center_x + offset_x, center_y + offset_y, 0.0f);
-	gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f,
-			  RAD(xform->rotation));
-	gs_matrix_scale3f(xform->scale_x, xform->scale_y, 1.0f);
-	gs_matrix_translate3f(-center_x, -center_y, 0.0f);
-
-	if (scene_b)
-		obs_transition_video_render_direct(transition,
-						   OBS_TRANSITION_SOURCE_B);
-	else
-		obs_transition_video_render_direct(transition,
-						   OBS_TRANSITION_SOURCE_A);
-
-	gs_matrix_pop();
-	gs_texrender_end(tr);
-}
-
-/* ------------------------------------------------------------------ */
 /* Helper: render browser and extract regions                          */
 /* ------------------------------------------------------------------ */
 
@@ -432,6 +995,7 @@ static void *lt_create(obs_data_t *settings, obs_source_t *source)
 	pthread_mutex_init(&lt->mutex, NULL);
 	slot_transform_identity(&lt->transform_a);
 	slot_transform_identity(&lt->transform_b);
+	lt_e2e_init(lt);
 
 	char *effect_path = obs_module_file("lottie_transition.effect");
 	if (effect_path) {
@@ -454,12 +1018,24 @@ static void *lt_create(obs_data_t *settings, obs_source_t *source)
 		lt->ep_scene_b = gs_effect_get_param_by_name(lt->effect, "scene_b");
 		lt->ep_browser_tex = gs_effect_get_param_by_name(lt->effect, "browser_tex");
 		lt->ep_invert_matte = gs_effect_get_param_by_name(lt->effect, "invert_matte");
+		lt->ep_scene_size = gs_effect_get_param_by_name(lt->effect, "scene_size");
+		lt->ep_slot_a_pos_scale =
+			gs_effect_get_param_by_name(lt->effect, "slot_a_pos_scale");
+		lt->ep_slot_a_rot_opacity =
+			gs_effect_get_param_by_name(lt->effect, "slot_a_rot_opacity");
+		lt->ep_slot_b_pos_scale =
+			gs_effect_get_param_by_name(lt->effect, "slot_b_pos_scale");
+		lt->ep_slot_b_rot_opacity =
+			gs_effect_get_param_by_name(lt->effect, "slot_b_rot_opacity");
 	}
 
 	lt->anim_total_frames = 30.0f;
 	lt->anim_frame_rate = 30.0f;
+	lt->requested_backend = LT_BACKEND_BROWSER;
+	lt->effective_backend = lt_backend_resolve(lt->requested_backend);
 
 	lt_update(lt, settings);
+	lt_e2e_write_json_line(lt, "create", "\"source_created\":true");
 
 	return lt;
 }
@@ -470,7 +1046,7 @@ static void lt_destroy(void *data)
 
 	obs_enter_graphics();
 
-	destroy_browser_source(lt);
+	destroy_render_backend(lt);
 
 	gs_texrender_destroy(lt->texrender_a);
 	gs_texrender_destroy(lt->texrender_b);
@@ -480,6 +1056,9 @@ static void lt_destroy(void *data)
 	obs_leave_graphics();
 
 	pthread_mutex_destroy(&lt->mutex);
+	lt_e2e_write_json_line(lt, "destroy", "\"source_destroyed\":true");
+	bfree(lt->e2e_prev_sample);
+	bfree(lt->e2e_capture_dir);
 	bfree(lt->lottie_file);
 	bfree(lt);
 }
@@ -492,6 +1071,7 @@ static void lt_update(void *data, obs_data_t *settings)
 
 	const char *file = obs_data_get_string(settings, "lottie_file");
 	bool file_changed = false;
+	bool backend_changed = false;
 
 	if (file && *file) {
 		if (!lt->lottie_file || strcmp(lt->lottie_file, file) != 0) {
@@ -502,6 +1082,14 @@ static void lt_update(void *data, obs_data_t *settings)
 	}
 
 	lt->invert_matte = obs_data_get_bool(settings, "invert_matte");
+
+	enum lt_backend_type requested_backend =
+		lt_backend_parse(obs_data_get_string(settings, "renderer_backend"));
+	if (lt->requested_backend != requested_backend) {
+		lt->requested_backend = requested_backend;
+		backend_changed = true;
+	}
+	lt->effective_backend = lt_backend_resolve(lt->requested_backend);
 
 	struct obs_video_info ovi;
 	if (obs_get_video_info(&ovi)) {
@@ -514,14 +1102,35 @@ static void lt_update(void *data, obs_data_t *settings)
 
 	pthread_mutex_unlock(&lt->mutex);
 
-	blog(LOG_INFO, TAG "lt_update: file_changed=%d file='%s' cx=%u cy=%u browser=%p",
-	     (int)file_changed, lt->lottie_file ? lt->lottie_file : "(null)",
+	if (lt_backend_is_fallback(lt->requested_backend, lt->effective_backend)) {
+		blog(LOG_WARNING, TAG "Requested backend '%s' is not available in this "
+		     "build, falling back to '%s'",
+		     lt_backend_name(lt->requested_backend),
+		     lt_backend_name(lt->effective_backend));
+	}
+
+	blog(LOG_INFO, TAG "lt_update: file_changed=%d backend_changed=%d "
+	     "backend=%s requested=%s file='%s' cx=%u cy=%u browser=%p",
+	     (int)file_changed, (int)backend_changed,
+	     lt_backend_name(lt->effective_backend),
+	     lt_backend_name(lt->requested_backend),
+	     lt->lottie_file ? lt->lottie_file : "(null)",
 	     lt->cx, lt->cy, (void *)lt->browser);
 
-	if (file_changed) {
-		destroy_browser_source(lt);
-		create_browser_source(lt);
+	if (file_changed || backend_changed) {
+		destroy_render_backend(lt);
+		create_render_backend(lt);
 	}
+
+	struct dstr extra = {0};
+	dstr_catf(&extra,
+		  "\"file_changed\":%s,\"backend_changed\":%s,"
+		  "\"cx\":%u,\"cy\":%u,\"browser_active\":%s",
+		  file_changed ? "true" : "false",
+		  backend_changed ? "true" : "false",
+		  lt->cx, lt->cy, lt->browser ? "true" : "false");
+	lt_e2e_write_json_line(lt, "update", extra.array);
+	dstr_free(&extra);
 }
 
 static obs_properties_t *lt_get_properties(void *data)
@@ -538,12 +1147,20 @@ static obs_properties_t *lt_get_properties(void *data)
 	obs_properties_add_bool(props, "invert_matte",
 				obs_module_text("InvertMatte"));
 
+	obs_property_t *backend = obs_properties_add_list(
+		props, "renderer_backend",
+		"Renderer Backend",
+		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(backend, "ThorVG Native", "thorvg");
+	obs_property_list_add_string(backend, "Browser (CEF / lottie-web)", "browser");
+
 	return props;
 }
 
 static void lt_get_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, "lottie_file", "");
+	obs_data_set_default_string(settings, "renderer_backend", "thorvg");
 	obs_data_set_default_bool(settings, "invert_matte", false);
 }
 
@@ -564,17 +1181,22 @@ static void lt_transition_start(void *data)
 	lt->has_transforms = false;
 	slot_transform_identity(&lt->transform_a);
 	slot_transform_identity(&lt->transform_b);
+	lt->e2e_transition_index++;
+	lt_e2e_reset_transition_state(lt);
 	pthread_mutex_unlock(&lt->mutex);
 
-	/* Destroy and recreate browser to get a fresh page load.
-	 * The restart_when_active + active toggle doesn't reliably reload
-	 * the page on subsequent transitions. Full recreate costs ~80ms
-	 * of CEF cold-start (frames 1-4 are transparent) but is reliable. */
-	obs_enter_graphics();
-	destroy_browser_source(lt);
-	obs_leave_graphics();
-	create_browser_source(lt);
-	blog(LOG_INFO, TAG "Recreated browser for transition");
+	lt_e2e_write_json_line(lt, "transition_start", "\"active\":true");
+
+	/* CEF needs a full recreate to guarantee a fresh page load.
+	 * Native backends are progress-driven and should not be restarted here. */
+	if (lt_backend_recreate_on_transition_start(lt->effective_backend)) {
+		obs_enter_graphics();
+		destroy_render_backend(lt);
+		obs_leave_graphics();
+		create_render_backend(lt);
+		blog(LOG_INFO, TAG "Recreated backend for transition (%s)",
+		     lt_backend_name(lt->effective_backend));
+	}
 }
 
 static void lt_transition_stop(void *data)
@@ -590,6 +1212,7 @@ static void lt_transition_stop(void *data)
 	slot_transform_identity(&lt->transform_a);
 	slot_transform_identity(&lt->transform_b);
 	pthread_mutex_unlock(&lt->mutex);
+	lt_e2e_write_json_line(lt, "transition_stop", "\"active\":false");
 
 	/* exec_browser_js doesn't work for private sources, animation is self-driving */
 }
@@ -606,10 +1229,16 @@ static void lt_video_tick(void *data, float seconds)
 	lt->progress = obs_transition_get_time(lt->source);
 
 	if (lt->tick_count <= 3) {
-		blog(LOG_INFO, TAG "tick #%d  t=%.3f  browser=%ux%u",
-		     lt->tick_count, lt->progress,
-		     obs_source_get_width(lt->browser),
-		     obs_source_get_height(lt->browser));
+		if (lt->effective_backend == LT_BACKEND_BROWSER) {
+			blog(LOG_INFO, TAG "tick #%d  t=%.3f  browser=%ux%u",
+			     lt->tick_count, lt->progress,
+			     obs_source_get_width(lt->browser),
+			     obs_source_get_height(lt->browser));
+		} else {
+			blog(LOG_INFO, TAG "tick #%d  t=%.3f  backend=%s",
+			     lt->tick_count, lt->progress,
+			     lt_backend_name(lt->effective_backend));
+		}
 	}
 
 	/* Animation is self-driving in bridge.js via requestAnimationFrame */
@@ -629,6 +1258,28 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 	struct lottie_transition *lt = data;
 	lt->render_count++;
 
+	if (lt->effective_backend == LT_BACKEND_THORVG) {
+		gs_texture_t *thorvg_texture = lt_thorvg_render(lt->thorvg_backend, t);
+		if (!thorvg_texture || !a || !b || !lt->effect) {
+			if (lt->render_count <= 3)
+				blog(LOG_INFO, TAG "render #%d: NO THORVG/EFFECT", lt->render_count);
+			return;
+		}
+
+		if (lt_thorvg_get_slot_transforms(lt->thorvg_backend, &lt->transform_a,
+						  &lt->transform_b)) {
+			lt->has_transforms = true;
+		} else {
+			lt->has_transforms = false;
+			slot_transform_identity(&lt->transform_a);
+			slot_transform_identity(&lt->transform_b);
+		}
+
+		render_and_optionally_capture_composite(lt, a, b,
+							thorvg_texture, cx, cy, t);
+		return;
+	}
+
 	if (!lt->browser || !lt->effect) {
 		if (lt->render_count <= 3)
 			blog(LOG_INFO, TAG "render #%d: NO BROWSER/EFFECT", lt->render_count);
@@ -645,14 +1296,12 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 
 	/* Render browser source into a texrender */
 	gs_texrender_t *browser_tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-	bool tr_ok = false;
 	if (gs_texrender_begin(browser_tr, cx, cy)) {
 		struct vec4 cc;
 		vec4_zero(&cc);
 		gs_clear(GS_CLEAR_COLOR, &cc, 0.0f, 0);
 		obs_source_video_render(lt->browser);
 		gs_texrender_end(browser_tr);
-		tr_ok = true;
 	}
 
 	gs_texture_t *browser_texture = gs_texrender_get_texture(browser_tr);
@@ -688,50 +1337,19 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 	/* Decode slot transforms from bottom row of browser texture */
 	decode_transforms_from_texture(lt, browser_texture, cx, cy);
 
-	/* If slot transforms exist, render scenes with transforms applied */
-	gs_texture_t *tex_a = a;
-	gs_texture_t *tex_b = b;
-
-	if (lt->has_transforms) {
-		if (!lt->texrender_a)
-			lt->texrender_a = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-		if (!lt->texrender_b)
-			lt->texrender_b = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-
-		render_scene_transformed(lt->texrender_a, lt->source, false,
-					 &lt->transform_a, cx, cy);
-		render_scene_transformed(lt->texrender_b, lt->source, true,
-					 &lt->transform_b, cx, cy);
-
-		gs_texture_t *ta = gs_texrender_get_texture(lt->texrender_a);
-		gs_texture_t *tb = gs_texrender_get_texture(lt->texrender_b);
-		if (ta) tex_a = ta;
-		if (tb) tex_b = tb;
-
-		if (lt->render_count <= 5) {
-			blog(LOG_INFO, TAG "transforms: A pos=(%.0f,%.0f) scale=(%.2f,%.2f) "
-			     "B pos=(%.0f,%.0f) scale=(%.2f,%.2f)",
-			     lt->transform_a.pos_x, lt->transform_a.pos_y,
-			     lt->transform_a.scale_x, lt->transform_a.scale_y,
-			     lt->transform_b.pos_x, lt->transform_b.pos_y,
-			     lt->transform_b.scale_x, lt->transform_b.scale_y);
-		}
+	if (lt->render_count <= 5 && lt->has_transforms) {
+		blog(LOG_INFO, TAG "transforms: A pos=(%.0f,%.0f) scale=(%.2f,%.2f) "
+		     "B pos=(%.0f,%.0f) scale=(%.2f,%.2f)",
+		     lt->transform_a.pos_x, lt->transform_a.pos_y,
+		     lt->transform_a.scale_x, lt->transform_a.scale_y,
+		     lt->transform_b.pos_x, lt->transform_b.pos_y,
+		     lt->transform_b.scale_x, lt->transform_b.scale_y);
 	}
 
 	/* Composite using shader:
 	 * browser_tex: R=matteA, G=matteB, B=unused, A=always 1 */
-	gs_effect_set_texture(lt->ep_scene_a, tex_a);
-	gs_effect_set_texture(lt->ep_scene_b, tex_b);
-	gs_effect_set_texture(lt->ep_browser_tex, browser_texture);
-	gs_effect_set_bool(lt->ep_invert_matte, lt->invert_matte);
-
-	const char *tech_name = "MatteComposite";
-	gs_technique_t *tech = gs_effect_get_technique(lt->effect, tech_name);
-	gs_technique_begin(tech);
-	gs_technique_begin_pass(tech, 0);
-	gs_draw_sprite(browser_texture, 0, cx, cy);
-	gs_technique_end_pass(tech);
-	gs_technique_end(tech);
+	render_and_optionally_capture_composite(lt, a, b,
+						browser_texture, cx, cy, t);
 
 	gs_texrender_destroy(browser_tr);
 }
