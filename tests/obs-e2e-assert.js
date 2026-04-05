@@ -141,6 +141,154 @@ function applyBehaviorChecks(summary, events, options, errors) {
   }
 }
 
+function summarizePerfEvents(events) {
+  const perfEvents = events
+    .filter((event) => event.event === 'perf_summary')
+    .sort((a, b) => a.transition_index - b.transition_index);
+  if (perfEvents.length === 0) {
+    return null;
+  }
+
+  const totals = {
+    transition_count: perfEvents.length,
+    avg_render_fps: 0,
+    min_render_fps: Number.POSITIVE_INFINITY,
+    avg_render_gap_ms: 0,
+    max_render_gap_ms: 0,
+    avg_callback_ms: 0,
+    max_callback_ms: 0,
+    avg_backend_ms: 0,
+    max_backend_ms: 0,
+    avg_backend_pass_ms: 0,
+    max_backend_pass_ms: 0,
+    avg_backend_slot_ms: 0,
+    max_backend_slot_ms: 0,
+    avg_backend_pack_ms: 0,
+    max_backend_pack_ms: 0,
+    avg_backend_upload_ms: 0,
+    max_backend_upload_ms: 0,
+    avg_composite_ms: 0,
+    max_composite_ms: 0,
+    gap_over_20ms: 0,
+    gap_over_33ms: 0,
+    gap_over_50ms: 0,
+  };
+
+  const transitions = perfEvents.map((event) => ({
+    transition_index: event.transition_index,
+    transition_ms: event.transition_ms || 0,
+    render_count: event.render_count || 0,
+    render_fps: event.render_fps || 0,
+    avg_render_gap_ms: event.avg_render_gap_ms || 0,
+    max_render_gap_ms: event.max_render_gap_ms || 0,
+    avg_callback_ms: event.avg_callback_ms || 0,
+    max_callback_ms: event.max_callback_ms || 0,
+    avg_backend_ms: event.avg_backend_ms || 0,
+    max_backend_ms: event.max_backend_ms || 0,
+    avg_backend_pass_ms: event.avg_backend_pass_ms || 0,
+    max_backend_pass_ms: event.max_backend_pass_ms || 0,
+    avg_backend_slot_ms: event.avg_backend_slot_ms || 0,
+    max_backend_slot_ms: event.max_backend_slot_ms || 0,
+    avg_backend_pack_ms: event.avg_backend_pack_ms || 0,
+    max_backend_pack_ms: event.max_backend_pack_ms || 0,
+    avg_backend_upload_ms: event.avg_backend_upload_ms || 0,
+    max_backend_upload_ms: event.max_backend_upload_ms || 0,
+    avg_composite_ms: event.avg_composite_ms || 0,
+    max_composite_ms: event.max_composite_ms || 0,
+    gap_over_20ms: event.gap_over_20ms || 0,
+    gap_over_33ms: event.gap_over_33ms || 0,
+    gap_over_50ms: event.gap_over_50ms || 0,
+  }));
+
+  for (const transition of transitions) {
+    totals.avg_render_fps += transition.render_fps;
+    totals.min_render_fps = Math.min(totals.min_render_fps, transition.render_fps);
+    totals.avg_render_gap_ms += transition.avg_render_gap_ms;
+    totals.max_render_gap_ms = Math.max(totals.max_render_gap_ms, transition.max_render_gap_ms);
+    totals.avg_callback_ms += transition.avg_callback_ms;
+    totals.max_callback_ms = Math.max(totals.max_callback_ms, transition.max_callback_ms);
+    totals.avg_backend_ms += transition.avg_backend_ms;
+    totals.max_backend_ms = Math.max(totals.max_backend_ms, transition.max_backend_ms);
+    totals.avg_backend_pass_ms += transition.avg_backend_pass_ms;
+    totals.max_backend_pass_ms = Math.max(totals.max_backend_pass_ms, transition.max_backend_pass_ms);
+    totals.avg_backend_slot_ms += transition.avg_backend_slot_ms;
+    totals.max_backend_slot_ms = Math.max(totals.max_backend_slot_ms, transition.max_backend_slot_ms);
+    totals.avg_backend_pack_ms += transition.avg_backend_pack_ms;
+    totals.max_backend_pack_ms = Math.max(totals.max_backend_pack_ms, transition.max_backend_pack_ms);
+    totals.avg_backend_upload_ms += transition.avg_backend_upload_ms;
+    totals.max_backend_upload_ms = Math.max(totals.max_backend_upload_ms, transition.max_backend_upload_ms);
+    totals.avg_composite_ms += transition.avg_composite_ms;
+    totals.max_composite_ms = Math.max(totals.max_composite_ms, transition.max_composite_ms);
+    totals.gap_over_20ms += transition.gap_over_20ms;
+    totals.gap_over_33ms += transition.gap_over_33ms;
+    totals.gap_over_50ms += transition.gap_over_50ms;
+  }
+
+  const count = transitions.length;
+  totals.avg_render_fps /= count;
+  totals.avg_render_gap_ms /= count;
+  totals.avg_callback_ms /= count;
+  totals.avg_backend_ms /= count;
+  totals.avg_backend_pass_ms /= count;
+  totals.avg_backend_slot_ms /= count;
+  totals.avg_backend_pack_ms /= count;
+  totals.avg_backend_upload_ms /= count;
+  totals.avg_composite_ms /= count;
+  if (!Number.isFinite(totals.min_render_fps)) {
+    totals.min_render_fps = 0;
+  }
+
+  return { transitions, totals };
+}
+
+function applyPerfChecks(summary, options, errors) {
+  if (!options.perfChecks) {
+    return;
+  }
+
+  const perf = summary.perf;
+  if (!perf || perf.transitions.length === 0) {
+    errors.push('No perf_summary events captured');
+    return;
+  }
+
+  const budgets = {
+    minRenderFps: options.minRenderFps || 30,
+    maxAvgRenderGapMs: options.maxAvgRenderGapMs || 40,
+    maxMaxRenderGapMs: options.maxMaxRenderGapMs || 85,
+    maxAvgBackendMs: options.maxAvgBackendMs || 22,
+    maxAvgCallbackMs: options.maxAvgCallbackMs || 28,
+  };
+
+  for (const transition of perf.transitions) {
+    if (transition.render_fps < budgets.minRenderFps) {
+      errors.push(
+        `Transition ${transition.transition_index} render fps ${transition.render_fps.toFixed(2)} fell below ${budgets.minRenderFps}`
+      );
+    }
+    if (transition.avg_render_gap_ms > budgets.maxAvgRenderGapMs) {
+      errors.push(
+        `Transition ${transition.transition_index} average render gap ${transition.avg_render_gap_ms.toFixed(2)}ms exceeded ${budgets.maxAvgRenderGapMs}ms`
+      );
+    }
+    if (transition.max_render_gap_ms > budgets.maxMaxRenderGapMs) {
+      errors.push(
+        `Transition ${transition.transition_index} max render gap ${transition.max_render_gap_ms.toFixed(2)}ms exceeded ${budgets.maxMaxRenderGapMs}ms`
+      );
+    }
+    if (transition.avg_backend_ms > budgets.maxAvgBackendMs) {
+      errors.push(
+        `Transition ${transition.transition_index} backend render time ${transition.avg_backend_ms.toFixed(2)}ms exceeded ${budgets.maxAvgBackendMs}ms`
+      );
+    }
+    if (transition.avg_callback_ms > budgets.maxAvgCallbackMs) {
+      errors.push(
+        `Transition ${transition.transition_index} callback time ${transition.avg_callback_ms.toFixed(2)}ms exceeded ${budgets.maxAvgCallbackMs}ms`
+      );
+    }
+  }
+}
+
 function summarizeRun(artifactDir, options = {}) {
   const events = loadEvents(artifactDir);
   const logs = findObsLogs(artifactDir);
@@ -152,7 +300,9 @@ function summarizeRun(artifactDir, options = {}) {
   const finals = bucket(events, 100);
   const errors = [];
   const exampleName = path.basename(options.example || '');
+  const visualChecks = options.visualChecks !== false;
   const skipGenericMidpointRegression =
+    visualChecks &&
     options.behaviorChecks &&
     (exampleName === 'simple-wipe.json' || exampleName === 'circle-reveal.json');
 
@@ -169,60 +319,68 @@ function summarizeRun(artifactDir, options = {}) {
     errors.push('No transition_stop event captured');
   }
 
-  if (midpoints.length === 0) {
+  if (visualChecks && midpoints.length === 0) {
     errors.push('No midpoint render samples captured');
   }
 
   let blankFrameCount = 0;
-  for (const event of renderSamples) {
-    if ((event.nonblack_ratio || 0) < 0.02 || (event.nonzero_alpha_ratio || 0) < 0.90) {
-      blankFrameCount += 1;
+  if (visualChecks) {
+    for (const event of renderSamples) {
+      if ((event.nonblack_ratio || 0) < 0.02 || (event.nonzero_alpha_ratio || 0) < 0.90) {
+        blankFrameCount += 1;
+      }
     }
-  }
-  if (blankFrameCount > 0) {
-    errors.push(`Detected ${blankFrameCount} blank/near-empty sampled frames`);
+    if (blankFrameCount > 0) {
+      errors.push(`Detected ${blankFrameCount} blank/near-empty sampled frames`);
+    }
   }
 
   let midpointEquivalentCount = 0;
-  for (const [triggerIndex, samples] of triggers.entries()) {
-    const start = samples.find((event) => event.bucket_percent === 0);
-    const middle = samples.find((event) => event.bucket_percent === 50);
-    const end = samples.find((event) => event.bucket_percent === 100);
-    if (!start || !middle || !end) {
-      continue;
-    }
+  if (visualChecks) {
+    for (const [triggerIndex, samples] of triggers.entries()) {
+      const start = samples.find((event) => event.bucket_percent === 0);
+      const middle = samples.find((event) => event.bucket_percent === 50);
+      const end = samples.find((event) => event.bucket_percent === 100);
+      if (!start || !middle || !end) {
+        continue;
+      }
 
-    const startDistance = colorDistance(middle, start);
-    const endDistance = colorDistance(middle, end);
-    if (!skipGenericMidpointRegression && (startDistance < 30 || endDistance < 30)) {
-      midpointEquivalentCount += 1;
-      errors.push(`Trigger ${triggerIndex} midpoint stayed too close to an endpoint`);
+      const startDistance = colorDistance(middle, start);
+      const endDistance = colorDistance(middle, end);
+      if (!skipGenericMidpointRegression && (startDistance < 30 || endDistance < 30)) {
+        midpointEquivalentCount += 1;
+        errors.push(`Trigger ${triggerIndex} midpoint stayed too close to an endpoint`);
+      }
     }
   }
 
   let jumpFrameCount = 0;
-  for (const event of renderSamples) {
-    if ((event.mean_abs_rgb_delta || 0) > 160) {
-      jumpFrameCount += 1;
+  if (visualChecks) {
+    for (const event of renderSamples) {
+      if ((event.mean_abs_rgb_delta || 0) > 160) {
+        jumpFrameCount += 1;
+      }
     }
-  }
-  if (jumpFrameCount > 0) {
-    errors.push(`Detected ${jumpFrameCount} sampled discontinuity spikes`);
+    if (jumpFrameCount > 0) {
+      errors.push(`Detected ${jumpFrameCount} sampled discontinuity spikes`);
+    }
   }
 
   let endpointMismatchCount = 0;
-  const triggerEntries = Array.from(triggers.entries()).sort((a, b) => a[0] - b[0]);
-  for (let i = 0; i < triggerEntries.length - 1; i += 1) {
-    const [, current] = triggerEntries[i];
-    const [, next] = triggerEntries[i + 1];
-    const end = current.find((event) => event.bucket_percent === 100);
-    const nextStart = next.find((event) => event.bucket_percent === 0);
-    if (!end || !nextStart) {
-      continue;
-    }
-    if (colorDistance(end, nextStart) > 35) {
-      endpointMismatchCount += 1;
-      errors.push(`Trigger ${i + 1} endpoint did not match the next trigger start`);
+  if (visualChecks) {
+    const triggerEntries = Array.from(triggers.entries()).sort((a, b) => a[0] - b[0]);
+    for (let i = 0; i < triggerEntries.length - 1; i += 1) {
+      const [, current] = triggerEntries[i];
+      const [, next] = triggerEntries[i + 1];
+      const end = current.find((event) => event.bucket_percent === 100);
+      const nextStart = next.find((event) => event.bucket_percent === 0);
+      if (!end || !nextStart) {
+        continue;
+      }
+      if (colorDistance(end, nextStart) > 35) {
+        endpointMismatchCount += 1;
+        errors.push(`Trigger ${i + 1} endpoint did not match the next trigger start`);
+      }
     }
   }
 
@@ -247,6 +405,7 @@ function summarizeRun(artifactDir, options = {}) {
     }));
 
   const create = events.find((event) => event.event === 'create') || null;
+  const perf = summarizePerfEvents(events);
   const summary = {
     artifact_dir: artifactDir,
     backend_requested: create?.backend_requested || options.backend || null,
@@ -259,6 +418,7 @@ function summarizeRun(artifactDir, options = {}) {
     jump_frame_count: jumpFrameCount,
     endpoint_mismatch_count: endpointMismatchCount,
     captured_frames: capturedFrames,
+    perf,
     checks: {
       plugin_loaded: pluginLoaded,
       transition_started: starts.length > 0,
@@ -273,7 +433,10 @@ function summarizeRun(artifactDir, options = {}) {
     errors,
   };
 
-  applyBehaviorChecks(summary, events, options, errors);
+  if (visualChecks) {
+    applyBehaviorChecks(summary, events, options, errors);
+  }
+  applyPerfChecks(summary, options, errors);
 
   summary.pass = errors.length === 0;
   return summary;

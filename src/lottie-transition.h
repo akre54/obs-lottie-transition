@@ -74,6 +74,7 @@ struct lottie_transition {
 	bool e2e_enabled;
 	bool e2e_trace;
 	bool e2e_capture_frames;
+	bool e2e_perf;
 	char *e2e_capture_dir;
 	uint32_t e2e_sample_mask;
 	int e2e_transition_index;
@@ -81,6 +82,28 @@ struct lottie_transition {
 	size_t e2e_prev_sample_size;
 	uint32_t e2e_prev_width;
 	uint32_t e2e_prev_height;
+	uint64_t perf_transition_start_ns;
+	uint64_t perf_last_render_start_ns;
+	uint64_t perf_render_gap_sum_ns;
+	uint64_t perf_render_gap_max_ns;
+	uint64_t perf_callback_sum_ns;
+	uint64_t perf_callback_max_ns;
+	uint64_t perf_backend_sum_ns;
+	uint64_t perf_backend_max_ns;
+	uint64_t perf_backend_pass_sum_ns;
+	uint64_t perf_backend_pass_max_ns;
+	uint64_t perf_backend_slot_sum_ns;
+	uint64_t perf_backend_slot_max_ns;
+	uint64_t perf_backend_pack_sum_ns;
+	uint64_t perf_backend_pack_max_ns;
+	uint64_t perf_backend_upload_sum_ns;
+	uint64_t perf_backend_upload_max_ns;
+	uint64_t perf_composite_sum_ns;
+	uint64_t perf_composite_max_ns;
+	uint32_t perf_render_gap_count;
+	uint32_t perf_gap_over_20ms;
+	uint32_t perf_gap_over_33ms;
+	uint32_t perf_gap_over_50ms;
 
 	/* Thread safety */
 	pthread_mutex_t mutex;

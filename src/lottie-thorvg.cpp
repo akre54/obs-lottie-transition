@@ -13,6 +13,10 @@
 #include <string>
 #include <vector>
 
+extern "C" {
+#include <util/platform.h>
+}
+
 #include <thorvg.h>
 
 struct thorvg_pass {
@@ -517,18 +521,27 @@ extern "C" void lt_thorvg_destroy(struct lt_thorvg *backend)
 	term_thorvg_runtime();
 }
 
-extern "C" gs_texture_t *lt_thorvg_render(struct lt_thorvg *backend, float progress)
+extern "C" gs_texture_t *lt_thorvg_render(struct lt_thorvg *backend, float progress,
+					  struct lt_thorvg_render_stats *stats)
 {
 	if (!backend)
 		return nullptr;
 
+	if (stats)
+		*stats = {};
+
+	const uint64_t total_start_ns = os_gettime_ns();
 	progress = std::min(std::max(progress, 0.0f), 1.0f);
+	const uint64_t pass_start_ns = os_gettime_ns();
 	render_pass(backend->matte_a, progress);
 	render_pass(backend->matte_b, progress);
 	render_pass(backend->overlay, progress);
+	const uint64_t pass_end_ns = os_gettime_ns();
+
 	backend->has_slots =
 		lt_slot_set_evaluate_progress(backend->slots, progress, &backend->slot_a,
 					      &backend->slot_b);
+	const uint64_t slot_end_ns = os_gettime_ns();
 
 	const size_t pixels = (size_t)backend->width * (size_t)backend->height;
 	for (size_t i = 0; i < pixels; i++) {
@@ -542,6 +555,7 @@ extern "C" gs_texture_t *lt_thorvg_render(struct lt_thorvg *backend, float progr
 		backend->rgba[idx + 2] = backend->overlay.loaded ? pixel_a(o) : 0;
 		backend->rgba[idx + 3] = 255;
 	}
+	const uint64_t pack_end_ns = os_gettime_ns();
 
 	if (!backend->texture) {
 		const uint8_t *data = backend->rgba.data();
@@ -565,6 +579,15 @@ extern "C" gs_texture_t *lt_thorvg_render(struct lt_thorvg *backend, float progr
 			gs_texture_set_image(backend->texture, backend->rgba.data(),
 					     backend->width * 4, false);
 		}
+	}
+	const uint64_t upload_end_ns = os_gettime_ns();
+
+	if (stats) {
+		stats->pass_ns = pass_end_ns - pass_start_ns;
+		stats->slot_eval_ns = slot_end_ns - pass_end_ns;
+		stats->pack_ns = pack_end_ns - slot_end_ns;
+		stats->upload_ns = upload_end_ns - pack_end_ns;
+		stats->total_ns = upload_end_ns - total_start_ns;
 	}
 
 	return backend->texture;

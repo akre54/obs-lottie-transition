@@ -160,6 +160,7 @@ static void lt_e2e_init(struct lottie_transition *lt)
 	lt->e2e_enabled = true;
 	lt->e2e_trace = lt_env_truthy("LT_E2E_TRACE");
 	lt->e2e_capture_frames = lt_env_truthy("LT_E2E_CAPTURE_FRAMES");
+	lt->e2e_perf = lt_env_truthy("LT_E2E_PERF");
 	lt->e2e_capture_dir = bstrdup(capture_dir);
 
 	os_mkdirs(lt->e2e_capture_dir);
@@ -181,6 +182,176 @@ static void lt_e2e_reset_transition_state(struct lottie_transition *lt)
 	lt->e2e_prev_sample_size = 0;
 	lt->e2e_prev_width = 0;
 	lt->e2e_prev_height = 0;
+	lt->perf_transition_start_ns = 0;
+	lt->perf_last_render_start_ns = 0;
+	lt->perf_render_gap_sum_ns = 0;
+	lt->perf_render_gap_max_ns = 0;
+	lt->perf_callback_sum_ns = 0;
+	lt->perf_callback_max_ns = 0;
+	lt->perf_backend_sum_ns = 0;
+	lt->perf_backend_max_ns = 0;
+	lt->perf_backend_pass_sum_ns = 0;
+	lt->perf_backend_pass_max_ns = 0;
+	lt->perf_backend_slot_sum_ns = 0;
+	lt->perf_backend_slot_max_ns = 0;
+	lt->perf_backend_pack_sum_ns = 0;
+	lt->perf_backend_pack_max_ns = 0;
+	lt->perf_backend_upload_sum_ns = 0;
+	lt->perf_backend_upload_max_ns = 0;
+	lt->perf_composite_sum_ns = 0;
+	lt->perf_composite_max_ns = 0;
+	lt->perf_render_gap_count = 0;
+	lt->perf_gap_over_20ms = 0;
+	lt->perf_gap_over_33ms = 0;
+	lt->perf_gap_over_50ms = 0;
+}
+
+static void lt_e2e_record_render_perf(struct lottie_transition *lt,
+				      uint64_t render_start_ns,
+				      uint64_t callback_ns,
+				      uint64_t backend_ns,
+				      uint64_t composite_ns,
+				      const struct lt_thorvg_render_stats *thorvg_stats)
+{
+	uint64_t gap_ns = 0;
+
+	if (!lt->e2e_enabled || !lt->e2e_perf)
+		return;
+
+	if (lt->perf_transition_start_ns == 0)
+		lt->perf_transition_start_ns = render_start_ns;
+
+	if (lt->perf_last_render_start_ns != 0) {
+		gap_ns = render_start_ns - lt->perf_last_render_start_ns;
+		lt->perf_render_gap_sum_ns += gap_ns;
+		if (gap_ns > lt->perf_render_gap_max_ns)
+			lt->perf_render_gap_max_ns = gap_ns;
+		lt->perf_render_gap_count++;
+		if (gap_ns > 20000000ULL)
+			lt->perf_gap_over_20ms++;
+		if (gap_ns > 33333333ULL)
+			lt->perf_gap_over_33ms++;
+		if (gap_ns > 50000000ULL)
+			lt->perf_gap_over_50ms++;
+	}
+	lt->perf_last_render_start_ns = render_start_ns;
+
+	lt->perf_callback_sum_ns += callback_ns;
+	if (callback_ns > lt->perf_callback_max_ns)
+		lt->perf_callback_max_ns = callback_ns;
+	lt->perf_backend_sum_ns += backend_ns;
+	if (backend_ns > lt->perf_backend_max_ns)
+		lt->perf_backend_max_ns = backend_ns;
+	if (thorvg_stats) {
+		lt->perf_backend_pass_sum_ns += thorvg_stats->pass_ns;
+		if (thorvg_stats->pass_ns > lt->perf_backend_pass_max_ns)
+			lt->perf_backend_pass_max_ns = thorvg_stats->pass_ns;
+		lt->perf_backend_slot_sum_ns += thorvg_stats->slot_eval_ns;
+		if (thorvg_stats->slot_eval_ns > lt->perf_backend_slot_max_ns)
+			lt->perf_backend_slot_max_ns = thorvg_stats->slot_eval_ns;
+		lt->perf_backend_pack_sum_ns += thorvg_stats->pack_ns;
+		if (thorvg_stats->pack_ns > lt->perf_backend_pack_max_ns)
+			lt->perf_backend_pack_max_ns = thorvg_stats->pack_ns;
+		lt->perf_backend_upload_sum_ns += thorvg_stats->upload_ns;
+		if (thorvg_stats->upload_ns > lt->perf_backend_upload_max_ns)
+			lt->perf_backend_upload_max_ns = thorvg_stats->upload_ns;
+	}
+	lt->perf_composite_sum_ns += composite_ns;
+	if (composite_ns > lt->perf_composite_max_ns)
+		lt->perf_composite_max_ns = composite_ns;
+}
+
+static void lt_e2e_write_perf_summary(struct lottie_transition *lt)
+{
+	double transition_ms;
+	double avg_gap_ms;
+	double max_gap_ms;
+	double avg_callback_ms;
+	double max_callback_ms;
+	double avg_backend_ms;
+	double max_backend_ms;
+	double avg_pass_ms;
+	double max_pass_ms;
+	double avg_slot_ms;
+	double max_slot_ms;
+	double avg_pack_ms;
+	double max_pack_ms;
+	double avg_upload_ms;
+	double max_upload_ms;
+	double avg_composite_ms;
+	double max_composite_ms;
+	double render_fps;
+	struct dstr extra = {0};
+	uint64_t stop_ns;
+
+	if (!lt->e2e_enabled || !lt->e2e_perf || lt->render_count <= 0)
+		return;
+
+	stop_ns = os_gettime_ns();
+	if (lt->perf_transition_start_ns == 0)
+		lt->perf_transition_start_ns = stop_ns;
+
+	transition_ms =
+		(double)(stop_ns - lt->perf_transition_start_ns) / 1000000.0;
+	avg_gap_ms = lt->perf_render_gap_count > 0
+		? ((double)lt->perf_render_gap_sum_ns /
+		   (double)lt->perf_render_gap_count) /
+			  1000000.0
+		: 0.0;
+	max_gap_ms = (double)lt->perf_render_gap_max_ns / 1000000.0;
+	avg_callback_ms =
+		((double)lt->perf_callback_sum_ns / (double)lt->render_count) /
+		1000000.0;
+	max_callback_ms = (double)lt->perf_callback_max_ns / 1000000.0;
+	avg_backend_ms =
+		((double)lt->perf_backend_sum_ns / (double)lt->render_count) /
+		1000000.0;
+	max_backend_ms = (double)lt->perf_backend_max_ns / 1000000.0;
+	avg_composite_ms =
+		((double)lt->perf_composite_sum_ns / (double)lt->render_count) /
+		1000000.0;
+	max_composite_ms = (double)lt->perf_composite_max_ns / 1000000.0;
+	avg_pass_ms =
+		((double)lt->perf_backend_pass_sum_ns / (double)lt->render_count) /
+		1000000.0;
+	max_pass_ms = (double)lt->perf_backend_pass_max_ns / 1000000.0;
+	avg_slot_ms =
+		((double)lt->perf_backend_slot_sum_ns / (double)lt->render_count) /
+		1000000.0;
+	max_slot_ms = (double)lt->perf_backend_slot_max_ns / 1000000.0;
+	avg_pack_ms =
+		((double)lt->perf_backend_pack_sum_ns / (double)lt->render_count) /
+		1000000.0;
+	max_pack_ms = (double)lt->perf_backend_pack_max_ns / 1000000.0;
+	avg_upload_ms =
+		((double)lt->perf_backend_upload_sum_ns / (double)lt->render_count) /
+		1000000.0;
+	max_upload_ms = (double)lt->perf_backend_upload_max_ns / 1000000.0;
+	render_fps = transition_ms > 0.0
+		? ((double)lt->render_count * 1000.0) / transition_ms
+		: 0.0;
+
+	dstr_catf(&extra,
+		  "\"transition_ms\":%.3f,\"render_count\":%d,"
+		  "\"avg_render_gap_ms\":%.3f,\"max_render_gap_ms\":%.3f,"
+		  "\"avg_callback_ms\":%.3f,\"max_callback_ms\":%.3f,"
+		  "\"avg_backend_ms\":%.3f,\"max_backend_ms\":%.3f,"
+		  "\"avg_backend_pass_ms\":%.3f,\"max_backend_pass_ms\":%.3f,"
+		  "\"avg_backend_slot_ms\":%.3f,\"max_backend_slot_ms\":%.3f,"
+		  "\"avg_backend_pack_ms\":%.3f,\"max_backend_pack_ms\":%.3f,"
+		  "\"avg_backend_upload_ms\":%.3f,\"max_backend_upload_ms\":%.3f,"
+		  "\"avg_composite_ms\":%.3f,\"max_composite_ms\":%.3f,"
+		  "\"render_fps\":%.3f,\"gap_over_20ms\":%u,"
+		  "\"gap_over_33ms\":%u,\"gap_over_50ms\":%u",
+		  transition_ms, lt->render_count, avg_gap_ms, max_gap_ms,
+		  avg_callback_ms, max_callback_ms, avg_backend_ms,
+		  max_backend_ms, avg_pass_ms, max_pass_ms, avg_slot_ms,
+		  max_slot_ms, avg_pack_ms, max_pack_ms, avg_upload_ms,
+		  max_upload_ms, avg_composite_ms, max_composite_ms,
+		  render_fps, lt->perf_gap_over_20ms, lt->perf_gap_over_33ms,
+		  lt->perf_gap_over_50ms);
+	lt_e2e_write_json_line(lt, "perf_summary", extra.array);
+	dstr_free(&extra);
 }
 
 static int lt_e2e_bucket_for_progress(float t)
@@ -1246,6 +1417,7 @@ static void lt_transition_start(void *data)
 	slot_transform_identity(&lt->transform_b);
 	lt->e2e_transition_index++;
 	lt_e2e_reset_transition_state(lt);
+	lt->perf_transition_start_ns = os_gettime_ns();
 	pthread_mutex_unlock(&lt->mutex);
 
 	lt_e2e_write_json_line(lt, "transition_start", "\"active\":true");
@@ -1275,6 +1447,7 @@ static void lt_transition_stop(void *data)
 	slot_transform_identity(&lt->transform_a);
 	slot_transform_identity(&lt->transform_b);
 	pthread_mutex_unlock(&lt->mutex);
+	lt_e2e_write_perf_summary(lt);
 	lt_e2e_write_json_line(lt, "transition_stop", "\"active\":false");
 
 	/* exec_browser_js doesn't work for private sources, animation is self-driving */
@@ -1319,10 +1492,15 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 					 uint32_t cx, uint32_t cy)
 {
 	struct lottie_transition *lt = data;
+	uint64_t callback_start_ns = os_gettime_ns();
 	lt->render_count++;
 
 	if (lt->effective_backend == LT_BACKEND_THORVG) {
-		gs_texture_t *thorvg_texture = lt_thorvg_render(lt->thorvg_backend, t);
+		struct lt_thorvg_render_stats thorvg_stats = {0};
+		uint64_t composite_start_ns;
+		uint64_t callback_end_ns;
+		gs_texture_t *thorvg_texture =
+			lt_thorvg_render(lt->thorvg_backend, t, &thorvg_stats);
 		if (!thorvg_texture || !a || !b || !lt->effect) {
 			if (lt->render_count <= 3)
 				blog(LOG_INFO, TAG "render #%d: NO THORVG/EFFECT", lt->render_count);
@@ -1338,8 +1516,15 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 			slot_transform_identity(&lt->transform_b);
 		}
 
+		composite_start_ns = os_gettime_ns();
 		render_and_optionally_capture_composite(lt, a, b,
 							thorvg_texture, cx, cy, t);
+		callback_end_ns = os_gettime_ns();
+		lt_e2e_record_render_perf(lt, callback_start_ns,
+					  callback_end_ns - callback_start_ns,
+					  thorvg_stats.total_ns,
+					  callback_end_ns - composite_start_ns,
+					  &thorvg_stats);
 		return;
 	}
 
@@ -1359,6 +1544,7 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 
 	/* Render browser source into a texrender */
 	gs_texrender_t *browser_tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+	uint64_t backend_start_ns = os_gettime_ns();
 	if (gs_texrender_begin(browser_tr, cx, cy)) {
 		struct vec4 cc;
 		vec4_zero(&cc);
@@ -1368,6 +1554,7 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 	}
 
 	gs_texture_t *browser_texture = gs_texrender_get_texture(browser_tr);
+	uint64_t backend_end_ns = os_gettime_ns();
 
 	/* Diagnostic readback — log channel-packed values throughout transition */
 	if (browser_texture && lt->render_count <= 50) {
@@ -1411,8 +1598,15 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 
 	/* Composite using shader:
 	 * browser_tex: R=matteA, G=matteB, B=unused, A=always 1 */
+	uint64_t composite_start_ns = os_gettime_ns();
 	render_and_optionally_capture_composite(lt, a, b,
 						browser_texture, cx, cy, t);
+	uint64_t callback_end_ns = os_gettime_ns();
+	lt_e2e_record_render_perf(lt, callback_start_ns,
+				  callback_end_ns - callback_start_ns,
+				  backend_end_ns - backend_start_ns,
+				  callback_end_ns - composite_start_ns,
+				  NULL);
 
 	gs_texrender_destroy(browser_tr);
 }

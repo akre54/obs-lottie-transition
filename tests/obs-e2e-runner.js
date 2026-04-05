@@ -376,6 +376,22 @@ async function connectObs(url, password, timeoutMs = 60000) {
   throw new Error(`Unable to connect to OBS websocket at ${url}`);
 }
 
+async function waitForObsReady(client, timeoutMs = 30000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      await client.request('GetVersion');
+      return;
+    } catch (error) {
+      if (!String(error.message || error).includes('not ready')) {
+        throw error;
+      }
+      await delay(1000);
+    }
+  }
+  throw new Error('OBS websocket connected but OBS never became ready');
+}
+
 async function ensureScene(client, sceneName) {
   const list = await client.request('GetSceneList');
   const exists = (list.scenes || []).some((scene) => scene.sceneName === sceneName);
@@ -513,6 +529,8 @@ async function main() {
   const backend = args.backend || DEFAULT_BACKEND;
   const triggers = Number.parseInt(args.triggers || String(DEFAULT_TRIGGER_COUNT), 10);
   const fixtureMode = args.fixture || DEFAULT_FIXTURE_MODE;
+  const captureFrames = (args['capture-frames'] || 'on') === 'on';
+  const perfMode = (args.perf || 'off') === 'on';
   const artifactBase = path.resolve(args['artifact-dir'] || path.join(os.tmpdir(), 'obs-lottie-e2e', `run-${slugTimestamp()}`));
   const artifactDir = path.join(artifactBase, 'artifacts');
   const runDir = artifactBase;
@@ -562,7 +580,8 @@ async function main() {
     ...process.env,
     LT_E2E_CAPTURE_DIR: artifactDir,
     LT_E2E_TRACE: '1',
-    LT_E2E_CAPTURE_FRAMES: '1',
+    LT_E2E_CAPTURE_FRAMES: captureFrames ? '1' : '0',
+    LT_E2E_PERF: perfMode ? '1' : '0',
   };
   if (useInjectedPlugin) {
     env.OBS_PLUGINS_PATH = pluginDir;
@@ -583,7 +602,7 @@ async function main() {
   let client;
   try {
     client = await connectObs(`ws://127.0.0.1:${websocket.port}`, websocket.password, 90000);
-    await client.request('GetVersion');
+    await waitForObsReady(client, 30000);
 
     await ensureScene(client, sceneA);
     await ensureScene(client, sceneB);
@@ -636,12 +655,20 @@ async function main() {
     backend,
     example,
     behaviorChecks: args['behavior-checks'] === 'on',
+    perfChecks: args['perf-checks'] === 'on',
+    visualChecks: args['visual-checks'] !== 'off',
+    minRenderFps: args['min-render-fps'] ? Number(args['min-render-fps']) : undefined,
+    maxAvgRenderGapMs: args['max-avg-render-gap-ms'] ? Number(args['max-avg-render-gap-ms']) : undefined,
+    maxMaxRenderGapMs: args['max-max-render-gap-ms'] ? Number(args['max-max-render-gap-ms']) : undefined,
+    maxAvgBackendMs: args['max-avg-backend-ms'] ? Number(args['max-avg-backend-ms']) : undefined,
+    maxAvgCallbackMs: args['max-avg-callback-ms'] ? Number(args['max-avg-callback-ms']) : undefined,
   });
   summary.obs_root = obsRoot;
   summary.profile_name = profileName;
   summary.collection_name = collectionName;
   summary.plugin_mode = useInjectedPlugin ? 'injected' : 'installed';
   summary.fixture_mode = fixtureMode;
+  summary.perf_mode = perfMode;
   writeSummary(artifactDir, summary);
 
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);

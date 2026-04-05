@@ -29,6 +29,7 @@ The plugin-side telemetry is enabled automatically through:
 - `LT_E2E_CAPTURE_DIR`
 - `LT_E2E_TRACE=1`
 - `LT_E2E_CAPTURE_FRAMES=1`
+- `LT_E2E_PERF=1` when perf mode is enabled
 
 ## Assertions
 
@@ -82,6 +83,31 @@ It executes:
 - `examples/slide-and-mask.json`
 - `examples/simple-wipe.json`
 - `examples/circle-reveal.json`
+
+## Performance Matrix
+
+Run the perf regression matrix with:
+
+```bash
+node tests/obs-perf-matrix.js \
+  --obs-app /Applications/OBS.app/Contents/MacOS/OBS \
+  --plugin-build build_macos/RelWithDebInfo/obs-lottie-transition.plugin
+```
+
+This uses the same real OBS flow, but disables frame capture and instead asserts on
+timing telemetry written by the plugin:
+
+- render fps
+- average and worst render gap
+- average backend time
+- average total callback time
+
+The perf summaries also include a native ThorVG stage breakdown:
+
+- `avg_backend_pass_ms`
+- `avg_backend_slot_ms`
+- `avg_backend_pack_ms`
+- `avg_backend_upload_ms`
 
 ## UI Smoke
 
