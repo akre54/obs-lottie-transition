@@ -14,9 +14,6 @@ const DEFAULT_BACKEND = 'thorvg';
 const DEFAULT_TRIGGER_COUNT = 3;
 const DEFAULT_FIXTURE_MODE = 'patterned';
 const TRANSITION_NAME = 'Lottie E2E';
-const BOOTSTRAP_SCENE = 'Bootstrap';
-const SCENE_A = 'Scene A';
-const SCENE_B = 'Scene B';
 
 function parseArgs(argv) {
   const out = {};
@@ -65,16 +62,16 @@ function makeUuid(seed) {
   ].join('-');
 }
 
-function buildSceneCollection(examplePath, backend, collectionName) {
+function buildSceneCollection(examplePath, backend, collectionName, bootstrapScene) {
   return {
     name: collectionName,
-    current_scene: BOOTSTRAP_SCENE,
-    current_program_scene: BOOTSTRAP_SCENE,
-    scene_order: [{ name: BOOTSTRAP_SCENE }],
+    current_scene: bootstrapScene,
+    current_program_scene: bootstrapScene,
+    scene_order: [{ name: bootstrapScene }],
     sources: [
       {
         prev_ver: 536936449,
-        name: BOOTSTRAP_SCENE,
+        name: bootstrapScene,
         uuid: makeUuid('bootstrap-scene'),
         id: 'scene',
         versioned_id: 'scene',
@@ -243,7 +240,7 @@ function userInstalledPluginPath() {
   return path.join(obsConfigRoot(), 'plugins/obs-lottie-transition.plugin');
 }
 
-function writeObsConfig(obsRoot, examplePath, backend, profileName, collectionName) {
+function writeObsConfig(obsRoot, examplePath, backend, profileName, collectionName, bootstrapScene) {
   const profileDir = path.join(obsRoot, 'basic/profiles', profileName);
   const scenesDir = path.join(obsRoot, 'basic/scenes');
 
@@ -254,7 +251,7 @@ function writeObsConfig(obsRoot, examplePath, backend, profileName, collectionNa
   write(path.join(profileDir, 'basic.ini'), buildProfileIni(profileName));
   write(
     path.join(scenesDir, `${collectionName}.json`),
-    `${JSON.stringify(buildSceneCollection(examplePath, backend, collectionName), null, 2)}\n`
+    `${JSON.stringify(buildSceneCollection(examplePath, backend, collectionName, bootstrapScene), null, 2)}\n`
   );
 
   return { obsRoot };
@@ -316,7 +313,8 @@ class ObsWebSocketClient {
           if (message.d.requestStatus?.result) {
             pending.resolve(message.d.responseData || {});
           } else {
-            pending.reject(new Error(message.d.requestStatus?.comment || 'OBS request failed'));
+            const comment = message.d.requestStatus?.comment || 'OBS request failed';
+            pending.reject(new Error(`${pending.requestType}: ${comment}`));
           }
         }
       });
@@ -351,7 +349,7 @@ class ObsWebSocketClient {
     };
 
     return new Promise((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
+      this.pending.set(requestId, { resolve, reject, requestType });
       this.socket.send(JSON.stringify(payload));
     });
   }
@@ -522,6 +520,11 @@ async function main() {
   const runId = path.basename(runDir);
   const profileName = `LottieE2E-${runId}`;
   const collectionName = `LottieE2E-${runId}`;
+  const bootstrapScene = `Bootstrap ${runId}`;
+  const sceneA = `Scene A ${runId}`;
+  const sceneB = `Scene B ${runId}`;
+  const inputNameA = `Solid A ${runId}`;
+  const inputNameB = `Solid B ${runId}`;
 
   if (!fs.existsSync(obsApp)) {
     throw new Error(`OBS binary not found: ${obsApp}`);
@@ -546,7 +549,7 @@ async function main() {
   }
 
   mkdirp(artifactDir);
-  writeObsConfig(obsRoot, example, backend, profileName, collectionName);
+  writeObsConfig(obsRoot, example, backend, profileName, collectionName, bootstrapScene);
   const websocket = readWebSocketConfig(obsRoot);
   const installedPlugin = userInstalledPluginPath();
   const useInjectedPlugin = !fs.existsSync(installedPlugin);
@@ -570,7 +573,7 @@ async function main() {
     '--multi',
     '--collection', collectionName,
     '--profile', profileName,
-    '--scene', BOOTSTRAP_SCENE,
+    '--scene', bootstrapScene,
   ], {
     env,
     detached: false,
@@ -582,25 +585,25 @@ async function main() {
     client = await connectObs(`ws://127.0.0.1:${websocket.port}`, websocket.password, 90000);
     await client.request('GetVersion');
 
-    await ensureScene(client, SCENE_A);
-    await ensureScene(client, SCENE_B);
-    await ensureImageInput(client, SCENE_A, 'Solid A', fixtureImages.redPng);
-    await ensureImageInput(client, SCENE_B, 'Solid B', fixtureImages.bluePng);
+    await ensureScene(client, sceneA);
+    await ensureScene(client, sceneB);
+    await ensureImageInput(client, sceneA, inputNameA, fixtureImages.redPng);
+    await ensureImageInput(client, sceneB, inputNameB, fixtureImages.bluePng);
     await client.request('SetCurrentSceneTransition', { transitionName: 'Cut' });
     try {
       await client.request('SetStudioModeEnabled', { studioModeEnabled: true });
     } catch {}
-    await client.request('SetCurrentProgramScene', { sceneName: SCENE_A });
+    await client.request('SetCurrentProgramScene', { sceneName: sceneA });
     try {
-      await client.request('SetCurrentPreviewScene', { sceneName: SCENE_B });
+      await client.request('SetCurrentPreviewScene', { sceneName: sceneB });
     } catch {}
     await delay(1200);
     await client.request('SetCurrentSceneTransition', { transitionName: TRANSITION_NAME });
     await client.request('SetCurrentSceneTransitionDuration', { transitionDuration: 1000 });
 
-    let current = SCENE_A;
+    let current = sceneA;
     for (let i = 0; i < triggers; i += 1) {
-      current = current === SCENE_A ? SCENE_B : SCENE_A;
+      current = current === sceneA ? sceneB : sceneA;
       await client.request('SetCurrentPreviewScene', { sceneName: current });
       await delay(100);
       await client.request('TriggerStudioModeTransition');

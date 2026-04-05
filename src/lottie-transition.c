@@ -855,7 +855,6 @@ static void create_render_backend(struct lottie_transition *lt)
 	switch (lt->effective_backend) {
 	case LT_BACKEND_THORVG:
 		create_thorvg_backend(lt);
-		create_browser_source(lt);
 		break;
 	case LT_BACKEND_BROWSER:
 	default:
@@ -868,7 +867,6 @@ static void destroy_render_backend(struct lottie_transition *lt)
 {
 	switch (lt->effective_backend) {
 	case LT_BACKEND_THORVG:
-		destroy_browser_source(lt);
 		destroy_thorvg_backend(lt);
 		break;
 	case LT_BACKEND_BROWSER:
@@ -1261,12 +1259,6 @@ static void lt_transition_start(void *data)
 		create_render_backend(lt);
 		blog(LOG_INFO, TAG "Recreated backend for transition (%s)",
 		     lt_backend_name(lt->effective_backend));
-	} else if (lt->effective_backend == LT_BACKEND_THORVG && lt->browser) {
-		obs_enter_graphics();
-		destroy_browser_source(lt);
-		obs_leave_graphics();
-		create_browser_source(lt);
-		blog(LOG_INFO, TAG "Recreated browser matte source for ThorVG transition");
 	}
 }
 
@@ -1346,28 +1338,8 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 			slot_transform_identity(&lt->transform_b);
 		}
 
-		gs_texrender_t *browser_tr = NULL;
-		gs_texture_t *matte_texture = thorvg_texture;
-
-		if (lt->browser) {
-			browser_tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-			if (browser_tr && gs_texrender_begin(browser_tr, cx, cy)) {
-				struct vec4 cc;
-				vec4_zero(&cc);
-				gs_clear(GS_CLEAR_COLOR, &cc, 0.0f, 0);
-				obs_source_video_render(lt->browser);
-				gs_texrender_end(browser_tr);
-
-				gs_texture_t *browser_texture =
-					gs_texrender_get_texture(browser_tr);
-				if (browser_texture)
-					matte_texture = browser_texture;
-			}
-		}
-
 		render_and_optionally_capture_composite(lt, a, b,
-							matte_texture, cx, cy, t);
-		gs_texrender_destroy(browser_tr);
+							thorvg_texture, cx, cy, t);
 		return;
 	}
 
