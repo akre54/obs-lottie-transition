@@ -3,6 +3,8 @@ uniform texture2d scene_a;
 uniform texture2d scene_b;
 uniform texture2d browser_tex;
 uniform bool invert_matte;
+uniform bool has_matte_a;
+uniform bool has_matte_b;
 uniform float2 scene_size;
 uniform float4 slot_a_pos_scale;
 uniform float2 slot_a_rot_opacity;
@@ -92,7 +94,13 @@ float4 PSMatteComposite(VertData v_in) : TARGET
 	}
 
 	float4 result;
-	if (mb < 0.004) {
+	if (!has_matte_a && !has_matte_b) {
+		result = sa.a >= sb.a ? sa : sb;
+	} else if (!has_matte_a || !has_matte_b) {
+		float wa = has_matte_a ? ma : (1.0 - mb);
+		float wb = has_matte_b ? mb : (1.0 - ma);
+		result = sa * wa + sb * wb;
+	} else if (mb < 0.004) {
 		if (ma < 0.004) {
 			result = sa.a >= sb.a ? sa : sb;
 		} else {
@@ -130,7 +138,13 @@ float4 PSMatteOnly(VertData v_in) : TARGET
 	}
 
 	float4 result;
-	if (mb < 0.004) {
+	if (!has_matte_a && !has_matte_b) {
+		result = sa.a >= sb.a ? sa : sb;
+	} else if (!has_matte_a || !has_matte_b) {
+		float wa = has_matte_a ? ma : (1.0 - mb);
+		float wb = has_matte_b ? mb : (1.0 - ma);
+		result = sa * wa + sb * wb;
+	} else if (mb < 0.004) {
 		if (ma < 0.004) {
 			result = sa.a >= sb.a ? sa : sb;
 		} else {

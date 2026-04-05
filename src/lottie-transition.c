@@ -29,6 +29,39 @@ static void draw_matte_composite(struct lottie_transition *lt, gs_texture_t *sce
 				 gs_texture_t *scene_b, gs_texture_t *matte,
 				 uint32_t cx, uint32_t cy);
 
+static void lt_detect_matte_layers(struct lottie_transition *lt)
+{
+	lt->has_matte_a = false;
+	lt->has_matte_b = false;
+
+	if (!lt->lottie_file || !*lt->lottie_file)
+		return;
+
+	obs_data_t *root = obs_data_create_from_json_file(lt->lottie_file);
+	if (!root)
+		return;
+
+	obs_data_array_t *layers = obs_data_get_array(root, "layers");
+	if (!layers) {
+		obs_data_release(root);
+		return;
+	}
+
+	const size_t count = obs_data_array_count(layers);
+	for (size_t i = 0; i < count; i++) {
+		obs_data_t *layer = obs_data_array_item(layers, i);
+		const char *name = obs_data_get_string(layer, "nm");
+		if (name && strcmp(name, "[MatteA]") == 0)
+			lt->has_matte_a = true;
+		else if (name && strcmp(name, "[MatteB]") == 0)
+			lt->has_matte_b = true;
+		obs_data_release(layer);
+	}
+
+	obs_data_array_release(layers);
+	obs_data_release(root);
+}
+
 static bool lt_env_truthy(const char *name)
 {
 	const char *value = getenv(name);
@@ -206,6 +239,25 @@ static bool lt_write_ppm_file(const char *path, const uint8_t *pixels,
 	return true;
 }
 
+static void lt_append_sample_json(struct dstr *extra, const char *name,
+				       const uint8_t *pixels, uint32_t width,
+				       uint32_t height, float u, float v)
+{
+	if (!extra || !pixels || width == 0 || height == 0)
+		return;
+
+	uint32_t x = (uint32_t)lroundf(u * (float)(width - 1));
+	uint32_t y = (uint32_t)lroundf(v * (float)(height - 1));
+	size_t offset = ((size_t)y * width + x) * 4;
+
+	dstr_catf(extra,
+		  ",\"sample_%s\":{\"x\":%u,\"y\":%u,\"r\":%u,\"g\":%u,\"b\":%u,\"a\":%u}",
+		  name, x, y, (unsigned int)pixels[offset + 0],
+		  (unsigned int)pixels[offset + 1],
+		  (unsigned int)pixels[offset + 2],
+		  (unsigned int)pixels[offset + 3]);
+}
+
 static void lt_e2e_capture_sample(struct lottie_transition *lt, gs_texture_t *texture,
 				  uint32_t cx, uint32_t cy, int bucket_percent)
 {
@@ -329,6 +381,11 @@ static void lt_e2e_capture_sample(struct lottie_transition *lt, gs_texture_t *te
 		dstr_catf(&extra, ",\"frame_path\":\"%s\"", escaped.array);
 		dstr_free(&escaped);
 	}
+	lt_append_sample_json(&extra, "center", copy, cx, cy, 0.50f, 0.50f);
+	lt_append_sample_json(&extra, "left_mid", copy, cx, cy, 0.25f, 0.50f);
+	lt_append_sample_json(&extra, "right_mid", copy, cx, cy, 0.75f, 0.50f);
+	lt_append_sample_json(&extra, "edge_25", copy, cx, cy, 0.25f, 0.25f);
+	lt_append_sample_json(&extra, "edge_75", copy, cx, cy, 0.75f, 0.75f);
 
 	lt_e2e_write_json_line(lt, "render_sample", extra.array);
 	dstr_free(&extra);
@@ -448,6 +505,8 @@ static void draw_matte_composite(struct lottie_transition *lt, gs_texture_t *sce
 	gs_effect_set_texture(lt->ep_scene_b, scene_b);
 	gs_effect_set_texture(lt->ep_browser_tex, matte);
 	gs_effect_set_bool(lt->ep_invert_matte, lt->invert_matte);
+	gs_effect_set_bool(lt->ep_has_matte_a, lt->has_matte_a);
+	gs_effect_set_bool(lt->ep_has_matte_b, lt->has_matte_b);
 	vec2_set(&scene_size, (float)cx, (float)cy);
 	vec4_set(&slot_a_pos_scale, slot_a.pos_x, slot_a.pos_y,
 		 slot_a.scale_x, slot_a.scale_y);
@@ -585,23 +644,24 @@ static bool build_html_file(struct lottie_transition *lt)
 				 lottie_js, strlen(lottie_js), false);
 	bfree(lottie_js);
 
-	/* Read backend-plan.js, bridge-core.js and bridge.js for inlining */
-	char *backend_plan_path = obs_module_file("web/backend-plan.js");
-	char *backend_plan_js = backend_plan_path ?
-		os_quick_read_utf8_file(backend_plan_path) : NULL;
-	bfree(backend_plan_path);
-	if (!backend_plan_js) {
-		blog(LOG_ERROR, TAG "Failed to read backend-plan.js");
-		return false;
-	}
-
+	/* Read bridge-core.js, backend-plan.js and bridge.js for inlining.
+	 * Order matters in the browser: backend-plan.js depends on BridgeCore. */
 	char *bridge_core_path = obs_module_file("web/bridge-core.js");
 	char *bridge_core_js = bridge_core_path ?
 		os_quick_read_utf8_file(bridge_core_path) : NULL;
 	bfree(bridge_core_path);
 	if (!bridge_core_js) {
-		bfree(backend_plan_js);
 		blog(LOG_ERROR, TAG "Failed to read bridge-core.js");
+		return false;
+	}
+
+	char *backend_plan_path = obs_module_file("web/backend-plan.js");
+	char *backend_plan_js = backend_plan_path ?
+		os_quick_read_utf8_file(backend_plan_path) : NULL;
+	bfree(backend_plan_path);
+	if (!backend_plan_js) {
+		bfree(bridge_core_js);
+		blog(LOG_ERROR, TAG "Failed to read backend-plan.js");
 		return false;
 	}
 
@@ -609,21 +669,22 @@ static bool build_html_file(struct lottie_transition *lt)
 	char *bridge_js = bridge_path ? os_quick_read_utf8_file(bridge_path) : NULL;
 	bfree(bridge_path);
 	if (!bridge_js) {
-		bfree(backend_plan_js);
 		bfree(bridge_core_js);
+		bfree(backend_plan_js);
 		blog(LOG_ERROR, TAG "Failed to read bridge.js");
 		return false;
 	}
 
 	/* Escape </ as <\/ to prevent premature </script> closure */
 	struct dstr bridge_escaped = {0};
-	for (const char *p = backend_plan_js; *p; p++) {
+	for (const char *p = bridge_core_js; *p; p++) {
 		if (p[0] == '<' && p[1] == '/')
 			{ dstr_cat(&bridge_escaped, "<\\/"); p++; }
 		else
 			dstr_catf(&bridge_escaped, "%c", *p);
 	}
-	for (const char *p = bridge_core_js; *p; p++) {
+	bfree(bridge_core_js);
+	for (const char *p = backend_plan_js; *p; p++) {
 		if (p[0] == '<' && p[1] == '/')
 			{ dstr_cat(&bridge_escaped, "<\\/"); p++; }
 		else
@@ -636,7 +697,6 @@ static bool build_html_file(struct lottie_transition *lt)
 		else
 			dstr_catf(&bridge_escaped, "%c", *p);
 	}
-	bfree(bridge_core_js);
 	bfree(bridge_js);
 
 	/* Read animation JSON */
@@ -795,6 +855,7 @@ static void create_render_backend(struct lottie_transition *lt)
 	switch (lt->effective_backend) {
 	case LT_BACKEND_THORVG:
 		create_thorvg_backend(lt);
+		create_browser_source(lt);
 		break;
 	case LT_BACKEND_BROWSER:
 	default:
@@ -807,6 +868,7 @@ static void destroy_render_backend(struct lottie_transition *lt)
 {
 	switch (lt->effective_backend) {
 	case LT_BACKEND_THORVG:
+		destroy_browser_source(lt);
 		destroy_thorvg_backend(lt);
 		break;
 	case LT_BACKEND_BROWSER:
@@ -1018,6 +1080,8 @@ static void *lt_create(obs_data_t *settings, obs_source_t *source)
 		lt->ep_scene_b = gs_effect_get_param_by_name(lt->effect, "scene_b");
 		lt->ep_browser_tex = gs_effect_get_param_by_name(lt->effect, "browser_tex");
 		lt->ep_invert_matte = gs_effect_get_param_by_name(lt->effect, "invert_matte");
+		lt->ep_has_matte_a = gs_effect_get_param_by_name(lt->effect, "has_matte_a");
+		lt->ep_has_matte_b = gs_effect_get_param_by_name(lt->effect, "has_matte_b");
 		lt->ep_scene_size = gs_effect_get_param_by_name(lt->effect, "scene_size");
 		lt->ep_slot_a_pos_scale =
 			gs_effect_get_param_by_name(lt->effect, "slot_a_pos_scale");
@@ -1118,6 +1182,7 @@ static void lt_update(void *data, obs_data_t *settings)
 	     lt->cx, lt->cy, (void *)lt->browser);
 
 	if (file_changed || backend_changed) {
+		lt_detect_matte_layers(lt);
 		destroy_render_backend(lt);
 		create_render_backend(lt);
 	}
@@ -1196,6 +1261,12 @@ static void lt_transition_start(void *data)
 		create_render_backend(lt);
 		blog(LOG_INFO, TAG "Recreated backend for transition (%s)",
 		     lt_backend_name(lt->effective_backend));
+	} else if (lt->effective_backend == LT_BACKEND_THORVG && lt->browser) {
+		obs_enter_graphics();
+		destroy_browser_source(lt);
+		obs_leave_graphics();
+		create_browser_source(lt);
+		blog(LOG_INFO, TAG "Recreated browser matte source for ThorVG transition");
 	}
 }
 
@@ -1275,8 +1346,28 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 			slot_transform_identity(&lt->transform_b);
 		}
 
+		gs_texrender_t *browser_tr = NULL;
+		gs_texture_t *matte_texture = thorvg_texture;
+
+		if (lt->browser) {
+			browser_tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+			if (browser_tr && gs_texrender_begin(browser_tr, cx, cy)) {
+				struct vec4 cc;
+				vec4_zero(&cc);
+				gs_clear(GS_CLEAR_COLOR, &cc, 0.0f, 0);
+				obs_source_video_render(lt->browser);
+				gs_texrender_end(browser_tr);
+
+				gs_texture_t *browser_texture =
+					gs_texrender_get_texture(browser_tr);
+				if (browser_texture)
+					matte_texture = browser_texture;
+			}
+		}
+
 		render_and_optionally_capture_composite(lt, a, b,
-							thorvg_texture, cx, cy, t);
+							matte_texture, cx, cy, t);
+		gs_texrender_destroy(browser_tr);
 		return;
 	}
 

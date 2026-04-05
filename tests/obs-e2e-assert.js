@@ -57,6 +57,22 @@ function colorDistance(a, b) {
     Math.abs(a.mean_b - b.mean_b);
 }
 
+function sampleDistance(a, b) {
+  return Math.abs((a?.r || 0) - (b?.r || 0)) +
+    Math.abs((a?.g || 0) - (b?.g || 0)) +
+    Math.abs((a?.b || 0) - (b?.b || 0));
+}
+
+function dominant(sample, channel, floor = 0, lead = 0) {
+  if (!sample) {
+    return false;
+  }
+
+  const value = sample[channel];
+  const others = ['r', 'g', 'b'].filter((key) => key !== channel).map((key) => sample[key]);
+  return value >= floor && others.every((other) => value >= other + lead);
+}
+
 function resolveFramePath(artifactDir, relativePath) {
   if (!relativePath) {
     return relativePath;
@@ -74,6 +90,57 @@ function resolveFramePath(artifactDir, relativePath) {
   return relativePath;
 }
 
+function applyBehaviorChecks(summary, events, options, errors) {
+  if (!options.behaviorChecks) {
+    return;
+  }
+
+  const exampleName = path.basename(summary.example_path || options.example || '');
+  const triggers = byTrigger(events);
+
+  if (exampleName === 'slide-and-mask.json') {
+    for (const [triggerIndex, samples] of triggers.entries()) {
+      const early = samples.find((event) => event.bucket_percent === 25);
+      const right = early?.sample_right_mid;
+      if (!dominant(right, 'g', 140, 60)) {
+        errors.push(`Trigger ${triggerIndex} did not show transformed slot content on the entering edge`);
+      }
+    }
+  }
+
+  if (exampleName === 'simple-wipe.json') {
+    for (const [triggerIndex, samples] of triggers.entries()) {
+      const middle = samples.find((event) => event.bucket_percent === 50);
+      const end = samples.find((event) => event.bucket_percent === 100);
+      const center = middle?.sample_center;
+      const leftEnd = end?.sample_left_mid;
+      const rightEnd = end?.sample_right_mid;
+      const centerLooksMixed = center && center.r >= 70 && center.b >= 70;
+      if (!centerLooksMixed || !dominant(leftEnd, 'b', 120, 40) || !dominant(rightEnd, 'b', 120, 40)) {
+        errors.push(`Trigger ${triggerIndex} did not behave like the centered wipe control`);
+      }
+    }
+  }
+
+  if (exampleName === 'circle-reveal.json') {
+    for (const [triggerIndex, samples] of triggers.entries()) {
+      const end = samples.find((event) => event.bucket_percent === 100);
+      const center = end?.sample_center;
+      const edge = end?.sample_edge_25;
+      if (!center || !edge) {
+        errors.push(`Trigger ${triggerIndex} is missing spatial samples for circle-reveal`);
+        continue;
+      }
+      if (sampleDistance(center, edge) < 120) {
+        errors.push(`Trigger ${triggerIndex} near-end frame looked like a cut instead of an outside-in reveal`);
+      }
+      if (!dominant(center, 'r', 80, 20) || !dominant(edge, 'b', 80, 20)) {
+        errors.push(`Trigger ${triggerIndex} did not keep the center and edge separated near the end of circle-reveal`);
+      }
+    }
+  }
+}
+
 function summarizeRun(artifactDir, options = {}) {
   const events = loadEvents(artifactDir);
   const logs = findObsLogs(artifactDir);
@@ -84,6 +151,10 @@ function summarizeRun(artifactDir, options = {}) {
   const midpoints = bucket(events, 50);
   const finals = bucket(events, 100);
   const errors = [];
+  const exampleName = path.basename(options.example || '');
+  const skipGenericMidpointRegression =
+    options.behaviorChecks &&
+    (exampleName === 'simple-wipe.json' || exampleName === 'circle-reveal.json');
 
   const pluginLoaded = logs.some((entry) => entry.text.includes('[lottie-transition] Plugin loaded'));
   if (!pluginLoaded) {
@@ -123,7 +194,7 @@ function summarizeRun(artifactDir, options = {}) {
 
     const startDistance = colorDistance(middle, start);
     const endDistance = colorDistance(middle, end);
-    if (startDistance < 30 || endDistance < 30) {
+    if (!skipGenericMidpointRegression && (startDistance < 30 || endDistance < 30)) {
       midpointEquivalentCount += 1;
       errors.push(`Trigger ${triggerIndex} midpoint stayed too close to an endpoint`);
     }
@@ -201,6 +272,8 @@ function summarizeRun(artifactDir, options = {}) {
     },
     errors,
   };
+
+  applyBehaviorChecks(summary, events, options, errors);
 
   summary.pass = errors.length === 0;
   return summary;

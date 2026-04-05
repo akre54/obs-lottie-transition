@@ -12,7 +12,8 @@ node tests/obs-e2e-runner.js \
   --plugin-build build_macos/RelWithDebInfo/obs-lottie-transition.plugin \
   --example examples/slide-and-mask.json \
   --backend thorvg \
-  --triggers 3
+  --triggers 3 \
+  --fixture patterned
 ```
 
 Artifacts are written under the selected run directory:
@@ -46,6 +47,41 @@ The summary checks for:
 - sampled discontinuity spikes
 - endpoint-to-next-start consistency
 - plugin log failures
+
+For behavior-specific checks against the built-in examples, enable them explicitly:
+
+```bash
+node tests/obs-e2e-runner.js \
+  --obs-app /Applications/OBS.app/Contents/MacOS/OBS \
+  --plugin-build build_macos/RelWithDebInfo/obs-lottie-transition.plugin \
+  --example examples/slide-and-mask.json \
+  --backend thorvg \
+  --triggers 1 \
+  --fixture patterned \
+  --behavior-checks on
+```
+
+These checks distinguish:
+
+- `slide-and-mask.json`: transformed slot motion must be visible, not just a wipe
+- `simple-wipe.json`: control case should remain a wipe, not look like slot motion
+- `circle-reveal.json`: center and edge samples must diverge mid-transition, not cut uniformly
+
+## Behavior Matrix
+
+Run the built-in behavior matrix with:
+
+```bash
+node tests/obs-e2e-matrix.js \
+  --obs-app /Applications/OBS.app/Contents/MacOS/OBS \
+  --plugin-build build_macos/RelWithDebInfo/obs-lottie-transition.plugin
+```
+
+It executes:
+
+- `examples/slide-and-mask.json`
+- `examples/simple-wipe.json`
+- `examples/circle-reveal.json`
 
 ## UI Smoke
 

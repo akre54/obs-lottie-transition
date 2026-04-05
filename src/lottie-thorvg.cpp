@@ -242,6 +242,11 @@ static inline uint8_t luma_from_argb(uint32_t px)
 	return (uint8_t)std::lround(r * 0.299f + g * 0.587f + b * 0.114f);
 }
 
+static inline uint8_t matte_coverage(uint32_t px)
+{
+	return std::max(pixel_a(px), luma_from_argb(px));
+}
+
 extern "C" bool lt_thorvg_runtime_available(void)
 {
 	return true;
@@ -333,8 +338,8 @@ extern "C" gs_texture_t *lt_thorvg_render(struct lt_thorvg *backend, float progr
 		const uint32_t o = backend->overlay.loaded ? backend->overlay.pixels[i] : 0;
 		const size_t idx = i * 4;
 
-		backend->rgba[idx + 0] = backend->matte_a.loaded ? luma_from_argb(a) : 255;
-		backend->rgba[idx + 1] = backend->matte_b.loaded ? luma_from_argb(b) : 0;
+		backend->rgba[idx + 0] = backend->matte_a.loaded ? matte_coverage(a) : 255;
+		backend->rgba[idx + 1] = backend->matte_b.loaded ? matte_coverage(b) : 0;
 		backend->rgba[idx + 2] = backend->overlay.loaded ? pixel_a(o) : 0;
 		backend->rgba[idx + 3] = 255;
 	}

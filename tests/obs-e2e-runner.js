@@ -12,6 +12,7 @@ const DEFAULT_PLUGIN_BUILD = path.resolve(__dirname, '..', 'build_macos/RelWithD
 const DEFAULT_EXAMPLE = path.resolve(__dirname, '..', 'examples/slide-and-mask.json');
 const DEFAULT_BACKEND = 'thorvg';
 const DEFAULT_TRIGGER_COUNT = 3;
+const DEFAULT_FIXTURE_MODE = 'patterned';
 const TRANSITION_NAME = 'Lottie E2E';
 const BOOTSTRAP_SCENE = 'Bootstrap';
 const SCENE_A = 'Scene A';
@@ -385,19 +386,54 @@ async function ensureScene(client, sceneName) {
   }
 }
 
-function writeSolidPpm(filePath, r, g, b, width = 1920, height = 1080) {
+function writePpm(filePath, pixelFn, width = 1920, height = 1080) {
   const header = Buffer.from(`P6\n${width} ${height}\n255\n`, 'ascii');
   const body = Buffer.alloc(width * height * 3);
-  for (let i = 0; i < width * height; i += 1) {
-    const offset = i * 3;
-    body[offset + 0] = r;
-    body[offset + 1] = g;
-    body[offset + 2] = b;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 3;
+      const [r, g, b] = pixelFn(x, y, width, height);
+      body[offset + 0] = r;
+      body[offset + 1] = g;
+      body[offset + 2] = b;
+    }
   }
   fs.writeFileSync(filePath, Buffer.concat([header, body]));
 }
 
-function ensureFixtureImages(runDir) {
+function fillRect(x, y, rect) {
+  return x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1;
+}
+
+function patternedPixelA(x, y, width, height) {
+  let color = [170, 28, 28];
+  if (fillRect(x, y, { x0: 1500, x1: 1620, y0: 0, y1: height })) {
+    color = [0, 240, 80];
+  } else if (fillRect(x, y, { x0: 180, x1: 320, y0: 120, y1: 260 })) {
+    color = [255, 255, 255];
+  } else if (fillRect(x, y, { x0: 720, x1: 860, y0: 760, y1: 900 })) {
+    color = [0, 220, 220];
+  }
+  return color;
+}
+
+function patternedPixelB(x, y, width, height) {
+  let color = [28, 28, 170];
+  if (fillRect(x, y, { x0: 300, x1: 420, y0: 0, y1: height })) {
+    color = [255, 220, 0];
+  } else if (fillRect(x, y, { x0: 1580, x1: 1720, y0: 120, y1: 260 })) {
+    color = [255, 128, 0];
+  } else if (fillRect(x, y, { x0: 760, x1: 900, y0: 760, y1: 900 })) {
+    color = [255, 255, 255];
+  }
+  return color;
+}
+
+function solidPixel(r, g, b) {
+  return () => [r, g, b];
+}
+
+function ensureFixtureImages(runDir, fixtureMode) {
   const fixturesDir = path.join(runDir, 'fixtures');
   mkdirp(fixturesDir);
 
@@ -406,8 +442,13 @@ function ensureFixtureImages(runDir) {
   const redPng = path.join(fixturesDir, 'solid-red.png');
   const bluePng = path.join(fixturesDir, 'solid-blue.png');
 
-  writeSolidPpm(redPpm, 255, 0, 0);
-  writeSolidPpm(bluePpm, 0, 0, 255);
+  if (fixtureMode === 'solid') {
+    writePpm(redPpm, solidPixel(255, 0, 0));
+    writePpm(bluePpm, solidPixel(0, 0, 255));
+  } else {
+    writePpm(redPpm, patternedPixelA);
+    writePpm(bluePpm, patternedPixelB);
+  }
 
   childProcess.spawnSync('/usr/bin/sips', ['-s', 'format', 'png', redPpm, '--out', redPng], { encoding: 'utf8' });
   childProcess.spawnSync('/usr/bin/sips', ['-s', 'format', 'png', bluePpm, '--out', bluePng], { encoding: 'utf8' });
@@ -473,6 +514,7 @@ async function main() {
   const example = path.resolve(args.example || DEFAULT_EXAMPLE);
   const backend = args.backend || DEFAULT_BACKEND;
   const triggers = Number.parseInt(args.triggers || String(DEFAULT_TRIGGER_COUNT), 10);
+  const fixtureMode = args.fixture || DEFAULT_FIXTURE_MODE;
   const artifactBase = path.resolve(args['artifact-dir'] || path.join(os.tmpdir(), 'obs-lottie-e2e', `run-${slugTimestamp()}`));
   const artifactDir = path.join(artifactBase, 'artifacts');
   const runDir = artifactBase;
@@ -496,6 +538,9 @@ async function main() {
   if (!['thorvg', 'browser'].includes(backend)) {
     throw new Error(`Unsupported backend: ${backend}`);
   }
+  if (!['patterned', 'solid'].includes(fixtureMode)) {
+    throw new Error(`Unsupported fixture mode: ${fixtureMode}`);
+  }
   if (!Number.isFinite(triggers) || triggers < 1) {
     throw new Error(`Invalid trigger count: ${args.triggers}`);
   }
@@ -506,7 +551,7 @@ async function main() {
   const installedPlugin = userInstalledPluginPath();
   const useInjectedPlugin = !fs.existsSync(installedPlugin);
   const pluginDir = path.dirname(pluginBuild);
-  const fixtureImages = ensureFixtureImages(runDir);
+  const fixtureImages = ensureFixtureImages(runDir, fixtureMode);
   const processLog = path.join(artifactDir, 'obs-process.log');
   const processLogFd = fs.openSync(processLog, 'a');
 
@@ -587,11 +632,13 @@ async function main() {
   const summary = summarizeRun(artifactDir, {
     backend,
     example,
+    behaviorChecks: args['behavior-checks'] === 'on',
   });
   summary.obs_root = obsRoot;
   summary.profile_name = profileName;
   summary.collection_name = collectionName;
   summary.plugin_mode = useInjectedPlugin ? 'injected' : 'installed';
+  summary.fixture_mode = fixtureMode;
   writeSummary(artifactDir, summary);
 
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);

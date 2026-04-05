@@ -36,6 +36,8 @@ struct lottie_transition {
 	gs_eparam_t *ep_scene_b;
 	gs_eparam_t *ep_browser_tex;
 	gs_eparam_t *ep_invert_matte;
+	gs_eparam_t *ep_has_matte_a;
+	gs_eparam_t *ep_has_matte_b;
 	gs_eparam_t *ep_scene_size;
 	gs_eparam_t *ep_slot_a_pos_scale;
 	gs_eparam_t *ep_slot_a_rot_opacity;
@@ -63,6 +65,8 @@ struct lottie_transition {
 	enum lt_backend_type effective_backend;
 	void *thorvg_backend;
 	bool invert_matte;
+	bool has_matte_a;
+	bool has_matte_b;
 	bool scripts_injected;
 	bool lottie_data_injected;
 
