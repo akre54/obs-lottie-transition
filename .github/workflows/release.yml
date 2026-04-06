@@ -132,6 +132,12 @@ jobs:
       - name: Install ThorVG build tools
         run: python -m pip install meson ninja
 
+      - name: Prime ThorVG cache variables
+        shell: pwsh
+        run: |
+          "MESON_BIN=$(python -c "import shutil; print(shutil.which('meson') or '')")" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "NINJA_BIN=$(python -c "import shutil; print(shutil.which('ninja') or '')")" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Fetch pinned ThorVG source
         shell: pwsh
         run: |
@@ -153,6 +159,48 @@ jobs:
 
       - name: Configure Windows build
         run: cmake --preset windows-x64
+
+      - name: Build vendored ThorVG
+        shell: pwsh
+        run: |
+          $meson = $env:MESON_BIN
+          $ninja = $env:NINJA_BIN
+          if (-not $meson) { throw "MESON_BIN not set" }
+          if (-not $ninja) { throw "NINJA_BIN not set" }
+
+          $src = Join-Path $PWD "vendor/thorvg"
+          $build = Join-Path $PWD "vendor/thorvg/builddir"
+          $prefix = Join-Path $PWD "vendor/thorvg-install"
+
+          if (Test-Path $build) {
+            & $meson setup --wipe $build $src `
+              --prefix $prefix `
+              -Ddefault_library=static `
+              -Dengines=sw `
+              -Dloaders=lottie `
+              -Dextra= `
+              -Dtools= `
+              -Dsavers= `
+              -Dbindings=capi `
+              -Dtests=false `
+              -Dfile=true
+          } else {
+            & $meson setup $build $src `
+              --prefix $prefix `
+              -Ddefault_library=static `
+              -Dengines=sw `
+              -Dloaders=lottie `
+              -Dextra= `
+              -Dtools= `
+              -Dsavers= `
+              -Dbindings=capi `
+              -Dtests=false `
+              -Dfile=true
+          }
+
+          if ($LASTEXITCODE -ne 0) { throw "Meson setup failed" }
+          & $ninja -C $build install
+          if ($LASTEXITCODE -ne 0) { throw "Ninja install failed" }
 
       - name: Build Windows plugin
         run: cmake --build --preset windows-x64 --target obs-lottie-transition

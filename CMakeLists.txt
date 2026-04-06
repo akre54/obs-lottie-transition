@@ -28,7 +28,11 @@ if(BUILD_PLUGIN)
     set(THORVG_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/thorvg)
     set(THORVG_BUILD_DIR ${THORVG_SOURCE_DIR}/builddir)
     set(THORVG_PREFIX_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/thorvg-install)
-    set(THORVG_LIB ${THORVG_PREFIX_DIR}/lib/libthorvg-1.a)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+      set(THORVG_LIB ${THORVG_PREFIX_DIR}/lib/thorvg-1.lib)
+    else()
+      set(THORVG_LIB ${THORVG_PREFIX_DIR}/lib/libthorvg-1.a)
+    endif()
 
     add_custom_command(
       OUTPUT ${THORVG_LIB}
@@ -74,6 +78,9 @@ if(BUILD_PLUGIN)
     add_dependencies(${CMAKE_PROJECT_NAME} thorvg_vendor)
     target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${THORVG_PREFIX_DIR}/include/thorvg-1)
     target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${THORVG_LIB})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+      target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TVG_STATIC)
+    endif()
   endif()
 
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE lottie-slot-eval)

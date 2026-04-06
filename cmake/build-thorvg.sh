@@ -4,9 +4,9 @@ set -euo pipefail
 src_dir="$1"
 build_dir="$2"
 prefix_dir="$3"
-meson_bin="${MESON_BIN:-$(command -v meson)}"
-ninja_bin="${NINJA_BIN:-$(command -v ninja)}"
-lipo_bin="${LIPO_BIN:-$(command -v lipo)}"
+meson_bin="${MESON_BIN:-}"
+ninja_bin="${NINJA_BIN:-}"
+lipo_bin="${LIPO_BIN:-}"
 
 common_args=(
   "--prefix" "$prefix_dir"
@@ -20,6 +20,14 @@ common_args=(
   "-Dtests=false"
   "-Dfile=true"
 )
+
+if [ -z "$meson_bin" ]; then
+  meson_bin="$(command -v meson || true)"
+fi
+
+if [ -z "$ninja_bin" ]; then
+  ninja_bin="$(command -v ninja || true)"
+fi
 
 if [ ! -x "$meson_bin" ] || [ ! -x "$ninja_bin" ]; then
   echo "meson or ninja not found" >&2
@@ -44,6 +52,10 @@ setup_build() {
 }
 
 if [ "$(uname -s)" = "Darwin" ]; then
+  if [ -z "$lipo_bin" ]; then
+    lipo_bin="$(command -v lipo || true)"
+  fi
+
   if [ ! -x "$lipo_bin" ]; then
     echo "lipo not found" >&2
     exit 1
