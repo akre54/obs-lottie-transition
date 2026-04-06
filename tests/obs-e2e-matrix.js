@@ -29,6 +29,18 @@ const CASES = [
     backend: 'thorvg',
     fixture: 'solid',
   },
+  {
+    name: 'spotlight-zoom-circular-transform',
+    example: 'examples/spotlight-zoom.json',
+    backend: 'thorvg',
+    fixture: 'solid',
+  },
+  {
+    name: 'diagonal-band-sweep',
+    example: 'examples/diagonal-band.json',
+    backend: 'thorvg',
+    fixture: 'solid',
+  },
 ];
 
 function parseArgs(argv) {

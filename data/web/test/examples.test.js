@@ -68,6 +68,24 @@ test('sliding-window example stays a single-matte transformed reveal', () => {
   assert.deepEqual(layerNames(plan.overlay), []);
 });
 
+test('spotlight-zoom example stays a single circular incoming matte with slot transforms', () => {
+  const json = readExample('spotlight-zoom.json');
+  const plan = BackendPlan.buildLayerPlan(json, 'browser');
+
+  assert.deepEqual(layerNames(plan.matteA), ['[SlotA]', '[SlotB]']);
+  assert.deepEqual(layerNames(plan.matteB), ['[MatteB]']);
+  assert.deepEqual(layerNames(plan.overlay), []);
+});
+
+test('diagonal-band example stays a single incoming matte without overlay layers', () => {
+  const json = readExample('diagonal-band.json');
+  const plan = BackendPlan.buildLayerPlan(json, 'browser');
+
+  assert.deepEqual(layerNames(plan.matteA), ['[SlotA]', '[SlotB]']);
+  assert.deepEqual(layerNames(plan.matteB), ['[MatteB]']);
+  assert.deepEqual(layerNames(plan.overlay), []);
+});
+
 test('JS transform strip encoding stays compatible with native decoder', () => {
   const decoder = process.env.TRANSFORM_DECODE_CLI;
 

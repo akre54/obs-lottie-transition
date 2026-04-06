@@ -20,7 +20,7 @@ The plugin looks for these reserved layer names inside a Lottie JSON:
 
 Any other layer is treated as decorative overlay content.
 
-Example files live in [examples/sliding-window.json](/Users/adam/Projects/obs-lottie-transition/examples/sliding-window.json), [examples/slide-and-mask.json](/Users/adam/Projects/obs-lottie-transition/examples/slide-and-mask.json), [examples/simple-wipe.json](/Users/adam/Projects/obs-lottie-transition/examples/simple-wipe.json), and [examples/circle-reveal.json](/Users/adam/Projects/obs-lottie-transition/examples/circle-reveal.json).
+Example files live in [examples/sliding-window.json](/Users/adam/Projects/obs-lottie-transition/examples/sliding-window.json), [examples/spotlight-zoom.json](/Users/adam/Projects/obs-lottie-transition/examples/spotlight-zoom.json), [examples/diagonal-band.json](/Users/adam/Projects/obs-lottie-transition/examples/diagonal-band.json), [examples/slide-and-mask.json](/Users/adam/Projects/obs-lottie-transition/examples/slide-and-mask.json), [examples/simple-wipe.json](/Users/adam/Projects/obs-lottie-transition/examples/simple-wipe.json), and [examples/circle-reveal.json](/Users/adam/Projects/obs-lottie-transition/examples/circle-reveal.json).
 
 ## Build
 
