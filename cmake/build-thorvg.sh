@@ -21,6 +21,27 @@ common_args=(
   "-Dfile=true"
 )
 
+find_existing_install() {
+  if [ -f "$prefix_dir/lib/thorvg-1.lib" ]; then
+    printf '%s\n' "$prefix_dir/lib/thorvg-1.lib"
+    return 0
+  fi
+
+  if [ -f "$prefix_dir/lib/libthorvg-1.a" ]; then
+    printf '%s\n' "$prefix_dir/lib/libthorvg-1.a"
+    return 0
+  fi
+
+  local multiarch_lib
+  multiarch_lib="$(find "$prefix_dir/lib" -mindepth 2 -maxdepth 2 -name 'libthorvg-1.a' -print -quit 2>/dev/null || true)"
+  if [ -n "$multiarch_lib" ]; then
+    printf '%s\n' "$multiarch_lib"
+    return 0
+  fi
+
+  return 1
+}
+
 if [ -z "$meson_bin" ]; then
   meson_bin="$(command -v meson || true)"
 fi
@@ -32,6 +53,11 @@ fi
 if [ ! -x "$meson_bin" ] || [ ! -x "$ninja_bin" ]; then
   echo "meson or ninja not found" >&2
   exit 1
+fi
+
+if existing_install="$(find_existing_install)"; then
+  echo "Using existing ThorVG install at $existing_install"
+  exit 0
 fi
 
 setup_build() {
