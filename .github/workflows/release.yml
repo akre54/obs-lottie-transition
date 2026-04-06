@@ -127,7 +127,7 @@ jobs:
           path: |
             vendor/thorvg-install
             vendor/thorvg/builddir
-          key: windows-thorvg-${{ env.THORVG_REF }}-${{ hashFiles('cmake/build-thorvg.sh') }}
+          key: windows-thorvg-v2-${{ env.THORVG_REF }}-${{ hashFiles('cmake/build-thorvg.sh', '.github/workflows/release.yml') }}
 
       - name: Install ThorVG build tools
         run: python -m pip install meson ninja
@@ -162,6 +162,9 @@ jobs:
 
       - name: Build vendored ThorVG
         shell: pwsh
+        env:
+          CC: cl
+          CXX: cl
         run: |
           $meson = $env:MESON_BIN
           $ninja = $env:NINJA_BIN
@@ -173,7 +176,7 @@ jobs:
           $prefix = Join-Path $PWD "vendor/thorvg-install"
 
           if (Test-Path $build) {
-            & $meson setup --wipe $build $src `
+            & $meson setup --vsenv --wipe $build $src `
               --prefix $prefix `
               -Ddefault_library=static `
               -Dengines=sw `
@@ -185,7 +188,7 @@ jobs:
               -Dtests=false `
               -Dfile=true
           } else {
-            & $meson setup $build $src `
+            & $meson setup --vsenv $build $src `
               --prefix $prefix `
               -Ddefault_library=static `
               -Dengines=sw `

@@ -21,6 +21,14 @@ common_args=(
   "-Dfile=true"
 )
 
+uname_s="$(uname -s)"
+is_windows=0
+case "$uname_s" in
+  MINGW*|MSYS*|CYGWIN*)
+    is_windows=1
+    ;;
+esac
+
 find_existing_install() {
   if [ -f "$prefix_dir/lib/thorvg-1.lib" ]; then
     printf '%s\n' "$prefix_dir/lib/thorvg-1.lib"
@@ -68,16 +76,21 @@ setup_build() {
   local args=("${common_args[@]}")
   args[1]="$prefix_dir"
 
+  local meson_setup_args=()
+  if [ "$is_windows" -eq 1 ]; then
+    meson_setup_args+=("--vsenv")
+  fi
+
   if [ ! -d "$build_dir" ]; then
-    "$@" "$meson_bin" setup "$build_dir" "$src_dir" "${args[@]}"
+    "$@" "$meson_bin" setup "${meson_setup_args[@]}" "$build_dir" "$src_dir" "${args[@]}"
   else
-    "$@" "$meson_bin" setup --wipe "$build_dir" "$src_dir" "${args[@]}"
+    "$@" "$meson_bin" setup "${meson_setup_args[@]}" --wipe "$build_dir" "$src_dir" "${args[@]}"
   fi
 
   "$@" "$ninja_bin" -C "$build_dir" install
 }
 
-if [ "$(uname -s)" = "Darwin" ]; then
+if [ "$uname_s" = "Darwin" ]; then
   if [ -z "$lipo_bin" ]; then
     lipo_bin="$(command -v lipo || true)"
   fi
@@ -102,5 +115,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
     -output "$prefix_dir/lib/libthorvg-1.a"
   cp -R "$arm64_prefix/include/." "$prefix_dir/include/"
 else
-  setup_build "$build_dir" "$prefix_dir"
+  if [ "$is_windows" -eq 1 ]; then
+    setup_build "$build_dir" "$prefix_dir" env CC=cl CXX=cl
+  else
+    setup_build "$build_dir" "$prefix_dir"
+  fi
 fi
