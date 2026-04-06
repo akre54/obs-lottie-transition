@@ -2,16 +2,23 @@
 
 ## Project Overview
 
-OBS plugin that uses Lottie animations to drive scene transitions. A private CEF browser source renders Lottie via lottie-web, producing matte textures and transform data that the C plugin composites with scene A/B via a custom shader.
+OBS plugin that uses Lottie animations to drive scene transitions. The preferred runtime is now the native ThorVG backend, which evaluates slot transforms and renders matte passes without depending on the browser source. The private CEF browser backend remains available as a fallback/debugging path and as a second implementation for behavior comparison.
 
 ## Architecture
 
-- **C plugin** (`src/lottie-transition.c/h`) — OBS_SOURCE_TYPE_TRANSITION, manages browser source lifecycle, GPU rendering pipeline
-- **Bridge JS** (`data/web/bridge.js`) — Self-driving animation renderer. Loads lottie data, auto-plays via requestAnimationFrame, channel-packs mattes into single canvas
-- **Shader** (`data/lottie_transition.effect`) — HLSL matte compositing from channel-packed browser texture
+- **C plugin** (`src/lottie-transition.c/h`) — OBS_SOURCE_TYPE_TRANSITION, manages backend selection, OBS render pipeline, matte compositing, E2E/perf telemetry
+- **ThorVG backend** (`src/lottie-thorvg.cpp/h`) — Native Lottie pass filtering/rendering for `[MatteA]`, `[MatteB]`, and overlay layers plus native slot transform evaluation
+- **Browser backend** (`data/web/bridge.js`, `data/web/bridge-core.js`, `data/web/backend-plan.js`) — CEF + `lottie-web` fallback path that renders mattes and encodes slot data for comparison/debugging
+- **Shader** (`data/lottie_transition.effect`) — Composite shader for transformed scene A/B sampling plus native or browser matte interpretation
 - **Transform decode** (`src/transform-decode.c/h`) — Pixel data strip → float transform extraction
 
-## Channel-Packing (Browser Canvas Layout)
+## Backend Status
+
+- **`thorvg`** — default and preferred path. Runs independently of the browser backend for matte rendering and slot transforms.
+- **`browser`** — fallback implementation and debugging aid. Still useful for validating examples against `lottie-web`, but no longer required for ThorVG correctness.
+- When ThorVG is requested and available, the plugin should not create or depend on a browser matte source. In test artifacts this should show up as `browser_active: false`.
+
+## Browser Channel-Packing (Fallback Path Only)
 
 Single 1920x1080 canvas with channel-packed data:
 - **R channel** = MatteA luminance (white = show scene A)
@@ -21,10 +28,13 @@ Single 1920x1080 canvas with channel-packed data:
 
 Three off-screen lottie instances render separately, then `getImageData`/`putImageData` packs the channels. Previous approach of stacking 3 regions vertically failed because the browser source only renders the viewport height and stretches it.
 
+This layout is only for the browser backend. The native ThorVG path uploads matte textures directly and does not do the old CPU repack step anymore.
+
 ### Shader Matte Logic
 
 - When matteB (G) is 0: `result = sceneA * ma + sceneB * (1 - ma)` (standard alpha-matte wipe)
 - When matteB (G) > 0: dual-matte mode with normalization so `ma + mb <= 1.0`
+- Native ThorVG mattes use the same logical interpretation in shader space, but arrive as direct grayscale matte textures instead of browser-packed channels
 - When browser not ready (`br.a < 0.5`): show scene A to avoid startup flash
 - CSS background is `#f00` (red) so pre-JS browser renders as matteA=255 (scene A visible)
 
@@ -58,7 +68,37 @@ This runs:
 - Node-based tests for shared browser packing logic in `data/web/bridge-core.js`
 - contract tests against the real files in `examples/*.json`
 
+### OBS End-To-End / Perf Harness
+
+The repo now has a real OBS-driven harness for behavior regressions and performance checks:
+
+```bash
+node tests/obs-e2e-matrix.js \
+  --obs-app /Applications/OBS.app/Contents/MacOS/OBS \
+  --plugin-build build_macos/RelWithDebInfo/obs-lottie-transition.plugin
+
+node tests/obs-perf-matrix.js \
+  --obs-app /Applications/OBS.app/Contents/MacOS/OBS \
+  --plugin-build build_macos/RelWithDebInfo/obs-lottie-transition.plugin
+```
+
+Key artifacts:
+- `summary.json`
+- `plugin-events.jsonl`
+- sampled frame captures
+- OBS logs
+
+Perf summaries include ThorVG-specific timing fields such as:
+- `avg_backend_pass_ms`
+- `avg_backend_slot_ms`
+- `avg_backend_pack_ms`
+- `avg_backend_upload_ms`
+
+`avg_backend_pack_ms` should now stay near zero on the native path because the expensive CPU repack loop was removed.
+
 ## Critical: Private Browser Source Constraints (CEF/OBS)
+
+These still matter for the browser fallback/backend debug path. They are no longer the core architecture for normal ThorVG execution.
 
 These are hard-won findings from extensive debugging. **Do not re-attempt failed approaches.**
 
@@ -106,8 +146,10 @@ Previous failed approaches for reference:
 - Layer `[SlotA]` / `[SlotB]` — transform-only placeholders (hidden during render)
 - Layer `[MatteA]` — required matte mask (white = show scene A)
 - Layer `[MatteB]` — optional matte mask (white = show scene B). If absent, shader uses `1 - matteA`
-- All other layers — decorative overlay (currently disabled in shader, needs color packing redesign)
+- All other layers — decorative overlay pass
 - Animation JSON files go in `examples/`
+
+ThorVG loads pass-specific filtered JSON directly from the original file text. Do not route ThorVG pass extraction through `obs_data` or other lossy JSON reconstruction.
 
 ## Data Strip Encoding
 - 6 floats per slot × 2 slots = 12 floats
