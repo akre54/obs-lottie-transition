@@ -17,6 +17,7 @@ endif()
 if(BUILD_PLUGIN OR BUILD_TESTING)
   add_library(lottie-slot-eval STATIC src/lottie-slot-eval.cpp)
   target_include_directories(lottie-slot-eval PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  set_target_properties(lottie-slot-eval PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
 if(BUILD_PLUGIN)
