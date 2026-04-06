@@ -134,3 +134,7 @@ These runs emit:
 `thorvg` is the preferred path and now runs independently of the browser backend for matte rendering and slot transforms.
 
 `browser` remains useful as a fallback implementation and comparison path when debugging example behavior.
+
+## License
+
+This repository is licensed under the Apache License 2.0. See [LICENSE](/Users/adam/Projects/obs-lottie-transition/LICENSE).
