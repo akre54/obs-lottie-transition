@@ -139,6 +139,29 @@ function applyBehaviorChecks(summary, events, options, errors) {
       }
     }
   }
+
+  if (exampleName === 'sliding-window.json') {
+    for (const [triggerIndex, samples] of triggers.entries()) {
+      const early = samples.find((event) => event.bucket_percent === 25);
+      const middle = samples.find((event) => event.bucket_percent === 50);
+      const end = samples.find((event) => event.bucket_percent === 100);
+      const earlyLeft = early?.sample_left_mid;
+      const earlyRight = early?.sample_right_mid;
+      const middleCenter = middle?.sample_center;
+      const endLeft = end?.sample_left_mid;
+      const endRight = end?.sample_right_mid;
+
+      if (!dominant(earlyLeft, 'r', 120, 40) || !dominant(earlyRight, 'b', 120, 40)) {
+        errors.push(`Trigger ${triggerIndex} did not show the moving reveal window entering from the right`);
+      }
+      if (!dominant(middleCenter, 'b', 120, 40)) {
+        errors.push(`Trigger ${triggerIndex} midpoint did not bring the incoming scene into the reveal window`);
+      }
+      if (!dominant(endLeft, 'b', 120, 40) || !dominant(endRight, 'b', 120, 40)) {
+        errors.push(`Trigger ${triggerIndex} did not finish with the incoming scene filling the frame`);
+      }
+    }
+  }
 }
 
 function summarizePerfEvents(events) {
@@ -304,7 +327,9 @@ function summarizeRun(artifactDir, options = {}) {
   const skipGenericMidpointRegression =
     visualChecks &&
     options.behaviorChecks &&
-    (exampleName === 'simple-wipe.json' || exampleName === 'circle-reveal.json');
+    (exampleName === 'simple-wipe.json' ||
+      exampleName === 'circle-reveal.json' ||
+      exampleName === 'sliding-window.json');
 
   const pluginLoaded = logs.some((entry) => entry.text.includes('[lottie-transition] Plugin loaded'));
   if (!pluginLoaded) {

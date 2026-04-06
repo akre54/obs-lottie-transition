@@ -59,6 +59,15 @@ test('overlay-bearing example does not accidentally introduce MatteB', () => {
   assert.ok(names.includes('ring-decoration'));
 });
 
+test('sliding-window example stays a single-matte transformed reveal', () => {
+  const json = readExample('sliding-window.json');
+  const plan = BackendPlan.buildLayerPlan(json, 'browser');
+
+  assert.deepEqual(layerNames(plan.matteA), ['[SlotA]', '[SlotB]']);
+  assert.deepEqual(layerNames(plan.matteB), ['[MatteB]']);
+  assert.deepEqual(layerNames(plan.overlay), []);
+});
+
 test('JS transform strip encoding stays compatible with native decoder', () => {
   const decoder = process.env.TRANSFORM_DECODE_CLI;
 

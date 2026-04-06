@@ -90,15 +90,17 @@
 
   function packFrameData(matteAData, matteBData, overlayData, outputData) {
     for (var p = 0; p < outputData.length; p += 4) {
-      var mAAlpha = matteAData[p + 3];
-      var matteALuma = mAAlpha > 0
-        ? Math.round((matteAData[p] * 0.299 + matteAData[p + 1] * 0.587 + matteAData[p + 2] * 0.114) * mAAlpha / 255)
-        : 0;
+      var matteALuma = Math.round(
+        matteAData[p] * 0.299 +
+        matteAData[p + 1] * 0.587 +
+        matteAData[p + 2] * 0.114
+      );
 
-      var mBAlpha = matteBData[p + 3];
-      var matteBLuma = mBAlpha > 0
-        ? Math.round((matteBData[p] * 0.299 + matteBData[p + 1] * 0.587 + matteBData[p + 2] * 0.114) * mBAlpha / 255)
-        : 0;
+      var matteBLuma = Math.round(
+        matteBData[p] * 0.299 +
+        matteBData[p + 1] * 0.587 +
+        matteBData[p + 2] * 0.114
+      );
 
       outputData[p + 0] = matteALuma;
       outputData[p + 1] = matteBLuma;

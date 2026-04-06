@@ -11,7 +11,7 @@
   "layers": [
     {
       "ty": 4,
-      "nm": "[MatteA]",
+      "nm": "[MatteB]",
       "ind": 0,
       "ip": 0,
       "op": 45,
@@ -27,28 +27,7 @@
       "shapes": [
         {
           "ty": "gr",
-          "nm": "full-screen-fill",
-          "it": [
-            {
-              "ty": "rc",
-              "d": 1,
-              "p": { "a": 0, "k": [960, 540] },
-              "s": { "a": 0, "k": [1920, 1080] },
-              "r": { "a": 0, "k": 0 },
-              "nm": "outer-rect"
-            },
-            {
-              "ty": "fl",
-              "c": { "a": 0, "k": [1, 1, 1, 1] },
-              "o": { "a": 0, "k": 100 },
-              "r": 1,
-              "nm": "fill"
-            }
-          ]
-        },
-        {
-          "ty": "gr",
-          "nm": "window-cutout",
+          "nm": "window-reveal",
           "it": [
             {
               "ty": "rc",
@@ -119,10 +98,10 @@
             },
             {
               "ty": "fl",
-              "c": { "a": 0, "k": [0, 0, 0, 1] },
+              "c": { "a": 0, "k": [1, 1, 1, 1] },
               "o": { "a": 0, "k": 100 },
               "r": 1,
-              "nm": "cutout-fill"
+              "nm": "window-fill"
             }
           ]
         }

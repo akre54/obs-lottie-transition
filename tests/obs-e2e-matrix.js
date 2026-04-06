@@ -9,16 +9,25 @@ const CASES = [
     name: 'slide-and-mask-transform',
     example: 'examples/slide-and-mask.json',
     backend: 'thorvg',
+    fixture: 'patterned',
   },
   {
     name: 'simple-wipe-control',
     example: 'examples/simple-wipe.json',
     backend: 'thorvg',
+    fixture: 'patterned',
   },
   {
     name: 'circle-reveal-radial',
     example: 'examples/circle-reveal.json',
     backend: 'thorvg',
+    fixture: 'patterned',
+  },
+  {
+    name: 'sliding-window-matte-transform',
+    example: 'examples/sliding-window.json',
+    backend: 'thorvg',
+    fixture: 'solid',
   },
 ];
 
@@ -54,7 +63,7 @@ function runCase(caseDef, args) {
     '--example', example,
     '--backend', caseDef.backend,
     '--triggers', '1',
-    '--fixture', 'patterned',
+    '--fixture', caseDef.fixture || 'patterned',
     '--behavior-checks', 'on',
   ], {
     encoding: 'utf8',

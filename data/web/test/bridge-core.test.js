@@ -42,7 +42,30 @@ test('packFrameData packs matte luminance and overlay alpha', () => {
 
   assert.deepEqual(Array.from(output), [
     255, 0, 64, 255,
-    0, 128, 200, 255
+    18, 255, 200, 255
+  ]);
+});
+
+test('packFrameData preserves opaque black matte cutouts', () => {
+  const matteA = new Uint8ClampedArray([
+    255, 255, 255, 255,
+    0, 0, 0, 255
+  ]);
+  const matteB = new Uint8ClampedArray([
+    0, 0, 0, 0,
+    0, 0, 0, 0
+  ]);
+  const overlay = new Uint8ClampedArray([
+    0, 0, 0, 0,
+    0, 0, 0, 0
+  ]);
+  const output = new Uint8ClampedArray(8);
+
+  BridgeCore.packFrameData(matteA, matteB, overlay, output);
+
+  assert.deepEqual(Array.from(output), [
+    255, 0, 0, 255,
+    0, 0, 0, 255
   ]);
 });
 
