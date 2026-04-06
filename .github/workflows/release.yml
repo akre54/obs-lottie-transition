@@ -55,7 +55,7 @@ jobs:
         run: cmake --preset macos
 
       - name: Build macOS plugin
-        run: cmake --build --preset macos
+        run: cmake --build --preset macos --target obs-lottie-transition
 
       - name: Package macOS plugin bundle
         id: package
