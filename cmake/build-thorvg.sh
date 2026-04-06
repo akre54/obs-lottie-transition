@@ -30,6 +30,10 @@ case "$uname_s" in
 esac
 
 find_existing_install() {
+  if [ "$is_windows" -eq 1 ] && [ -f "$prefix_dir/lib/libthorvg-1.a" ] && [ ! -f "$prefix_dir/lib/thorvg-1.lib" ]; then
+    cp "$prefix_dir/lib/libthorvg-1.a" "$prefix_dir/lib/thorvg-1.lib"
+  fi
+
   if [ -f "$prefix_dir/lib/thorvg-1.lib" ]; then
     printf '%s\n' "$prefix_dir/lib/thorvg-1.lib"
     return 0
@@ -125,6 +129,9 @@ if [ "$uname_s" = "Darwin" ]; then
 else
   if [ "$is_windows" -eq 1 ]; then
     setup_build "$build_dir" "$prefix_dir" env CC=cl CXX=cl
+    if [ -f "$prefix_dir/lib/libthorvg-1.a" ] && [ ! -f "$prefix_dir/lib/thorvg-1.lib" ]; then
+      cp "$prefix_dir/lib/libthorvg-1.a" "$prefix_dir/lib/thorvg-1.lib"
+    fi
   else
     setup_build "$build_dir" "$prefix_dir"
   fi
