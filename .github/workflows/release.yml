@@ -24,6 +24,16 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
+      - name: Install ThorVG build tools
+        run: python3 -m pip install --user meson ninja
+
+      - name: Fetch pinned ThorVG source
+        run: |
+          git init vendor/thorvg
+          git -C vendor/thorvg remote add origin https://github.com/thorvg/thorvg.git
+          git -C vendor/thorvg fetch --depth 1 origin 183f863c7e7cb5094c69677b2f9e5f3fc9c3aece
+          git -C vendor/thorvg checkout --detach FETCH_HEAD
+
       - name: Verify tag matches buildspec version
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}

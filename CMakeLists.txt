@@ -9,6 +9,11 @@ option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
 option(ENABLE_THORVG "Build the experimental ThorVG native backend" ON)
 
+set(LT_MATH_LIB "")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(LT_MATH_LIB m)
+endif()
+
 if(BUILD_PLUGIN OR BUILD_TESTING)
   add_library(lottie-slot-eval STATIC src/lottie-slot-eval.cpp)
   target_include_directories(lottie-slot-eval PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -27,9 +32,9 @@ if(BUILD_PLUGIN)
 
     add_custom_command(
       OUTPUT ${THORVG_LIB}
-      COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-thorvg.sh
+      COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-thorvg.sh
               ${THORVG_SOURCE_DIR} ${THORVG_BUILD_DIR} ${THORVG_PREFIX_DIR}
-      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-thorvg.sh
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-thorvg.sh
               ${THORVG_SOURCE_DIR}/meson.build
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
       COMMENT "Building vendored ThorVG"
@@ -72,6 +77,9 @@ if(BUILD_PLUGIN)
   endif()
 
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE lottie-slot-eval)
+  if(LT_MATH_LIB)
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${LT_MATH_LIB})
+  endif()
 
   set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 endif()
@@ -123,6 +131,9 @@ if(BUILD_TESTING)
     lottie-slot-eval-test
     PRIVATE LT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
   )
+  if(LT_MATH_LIB)
+    target_link_libraries(transform-decode-test PRIVATE ${LT_MATH_LIB})
+  endif()
   target_link_libraries(lottie-slot-eval-test PRIVATE lottie-slot-eval)
   target_link_libraries(lottie-slot-eval-cli PRIVATE lottie-slot-eval)
   add_test(NAME transform-decode-test COMMAND transform-decode-test)
