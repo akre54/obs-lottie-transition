@@ -23,14 +23,13 @@ struct thorvg_pass {
 	tvg::Animation *animation = nullptr;
 	tvg::SwCanvas *canvas = nullptr;
 	std::vector<uint32_t> pixels;
+	gs_texture_t *texture = nullptr;
 	bool loaded = false;
 };
 
 struct lt_thorvg {
 	uint32_t width = 0;
 	uint32_t height = 0;
-	gs_texture_t *texture = nullptr;
-	std::vector<uint8_t> rgba;
 	lt_slot_set slots;
 	slot_transform slot_a;
 	slot_transform slot_b;
@@ -389,6 +388,11 @@ static bool load_pass(thorvg_pass &pass, const std::string &json_text,
 
 static void destroy_pass(thorvg_pass &pass)
 {
+	if (pass.texture) {
+		gs_texture_destroy(pass.texture);
+		pass.texture = nullptr;
+	}
+
 	if (pass.canvas) {
 		pass.canvas->sync();
 		delete pass.canvas;
@@ -419,37 +423,39 @@ static void render_pass(thorvg_pass &pass, float progress)
 	pass.canvas->sync();
 }
 
-static inline uint8_t pixel_a(uint32_t px)
+static bool update_pass_texture(thorvg_pass &pass, uint32_t width, uint32_t height)
 {
-	return (uint8_t)((px >> 24) & 0xFF);
-}
+	if (!pass.loaded)
+		return false;
 
-static inline uint8_t pixel_r(uint32_t px)
-{
-	return (uint8_t)((px >> 16) & 0xFF);
-}
+	if (!pass.texture) {
+		const uint8_t *data =
+			reinterpret_cast<const uint8_t *>(pass.pixels.data());
+		pass.texture = gs_texture_create(width, height, GS_BGRA, 1, &data,
+						 GS_DYNAMIC);
+	}
 
-static inline uint8_t pixel_g(uint32_t px)
-{
-	return (uint8_t)((px >> 8) & 0xFF);
-}
+	if (!pass.texture)
+		return false;
 
-static inline uint8_t pixel_b(uint32_t px)
-{
-	return (uint8_t)(px & 0xFF);
-}
+	uint8_t *mapped = nullptr;
+	uint32_t linesize = 0;
+	const uint8_t *src =
+		reinterpret_cast<const uint8_t *>(pass.pixels.data());
 
-static inline uint8_t luma_from_argb(uint32_t px)
-{
-	const float r = (float)pixel_r(px);
-	const float g = (float)pixel_g(px);
-	const float b = (float)pixel_b(px);
-	return (uint8_t)std::lround(r * 0.299f + g * 0.587f + b * 0.114f);
-}
+	if (gs_texture_map(pass.texture, &mapped, &linesize)) {
+		for (uint32_t y = 0; y < height; y++) {
+			memcpy(mapped + (size_t)y * linesize,
+			       src + (size_t)y * width * sizeof(uint32_t),
+			       (size_t)width * sizeof(uint32_t));
+		}
+		gs_texture_unmap(pass.texture);
+	} else {
+		gs_texture_set_image(pass.texture, src, width * sizeof(uint32_t),
+				     false);
+	}
 
-static inline uint8_t matte_coverage(uint32_t px)
-{
-	return std::max(pixel_a(px), luma_from_argb(px));
+	return true;
 }
 
 extern "C" bool lt_thorvg_runtime_available(void)
@@ -475,7 +481,6 @@ extern "C" struct lt_thorvg *lt_thorvg_create(const char *lottie_file, uint32_t 
 	auto *backend = new lt_thorvg;
 	backend->width = cx;
 	backend->height = cy;
-	backend->rgba.assign((size_t)cx * (size_t)cy * 4, 0);
 	slot_transform_identity(&backend->slot_a);
 	slot_transform_identity(&backend->slot_b);
 	backend->has_slots = lt_slot_set_load_file(lottie_file, backend->slots);
@@ -509,11 +514,6 @@ extern "C" void lt_thorvg_destroy(struct lt_thorvg *backend)
 	if (!backend)
 		return;
 
-	if (backend->texture) {
-		gs_texture_destroy(backend->texture);
-		backend->texture = nullptr;
-	}
-
 	destroy_pass(backend->overlay);
 	destroy_pass(backend->matte_b);
 	destroy_pass(backend->matte_a);
@@ -542,44 +542,10 @@ extern "C" gs_texture_t *lt_thorvg_render(struct lt_thorvg *backend, float progr
 		lt_slot_set_evaluate_progress(backend->slots, progress, &backend->slot_a,
 					      &backend->slot_b);
 	const uint64_t slot_end_ns = os_gettime_ns();
+	const uint64_t pack_end_ns = slot_end_ns;
 
-	const size_t pixels = (size_t)backend->width * (size_t)backend->height;
-	for (size_t i = 0; i < pixels; i++) {
-		const uint32_t a = backend->matte_a.loaded ? backend->matte_a.pixels[i] : 0;
-		const uint32_t b = backend->matte_b.loaded ? backend->matte_b.pixels[i] : 0;
-		const uint32_t o = backend->overlay.loaded ? backend->overlay.pixels[i] : 0;
-		const size_t idx = i * 4;
-
-		backend->rgba[idx + 0] = backend->matte_a.loaded ? matte_coverage(a) : 255;
-		backend->rgba[idx + 1] = backend->matte_b.loaded ? matte_coverage(b) : 0;
-		backend->rgba[idx + 2] = backend->overlay.loaded ? pixel_a(o) : 0;
-		backend->rgba[idx + 3] = 255;
-	}
-	const uint64_t pack_end_ns = os_gettime_ns();
-
-	if (!backend->texture) {
-		const uint8_t *data = backend->rgba.data();
-		backend->texture = gs_texture_create(backend->width, backend->height, GS_RGBA, 1,
-						     &data, GS_DYNAMIC);
-	}
-
-	if (backend->texture) {
-		uint8_t *mapped = nullptr;
-		uint32_t linesize = 0;
-
-		if (gs_texture_map(backend->texture, &mapped, &linesize)) {
-			for (uint32_t y = 0; y < backend->height; y++) {
-				const uint8_t *src = backend->rgba.data() +
-					(size_t)y * backend->width * 4;
-				uint8_t *dst = mapped + (size_t)y * linesize;
-				memcpy(dst, src, (size_t)backend->width * 4);
-			}
-			gs_texture_unmap(backend->texture);
-		} else {
-			gs_texture_set_image(backend->texture, backend->rgba.data(),
-					     backend->width * 4, false);
-		}
-	}
+	update_pass_texture(backend->matte_a, backend->width, backend->height);
+	update_pass_texture(backend->matte_b, backend->width, backend->height);
 	const uint64_t upload_end_ns = os_gettime_ns();
 
 	if (stats) {
@@ -590,7 +556,18 @@ extern "C" gs_texture_t *lt_thorvg_render(struct lt_thorvg *backend, float progr
 		stats->total_ns = upload_end_ns - total_start_ns;
 	}
 
-	return backend->texture;
+	return backend->matte_a.texture ? backend->matte_a.texture :
+	       (backend->matte_b.texture ? backend->matte_b.texture : nullptr);
+}
+
+extern "C" gs_texture_t *lt_thorvg_get_matte_a_texture(struct lt_thorvg *backend)
+{
+	return backend ? backend->matte_a.texture : nullptr;
+}
+
+extern "C" gs_texture_t *lt_thorvg_get_matte_b_texture(struct lt_thorvg *backend)
+{
+	return backend ? backend->matte_b.texture : nullptr;
 }
 
 extern "C" bool lt_thorvg_get_slot_transforms(struct lt_thorvg *backend,

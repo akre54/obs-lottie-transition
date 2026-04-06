@@ -26,8 +26,9 @@ static void create_render_backend(struct lottie_transition *lt);
 static void destroy_render_backend(struct lottie_transition *lt);
 static void draw_texture_direct(gs_texture_t *texture, uint32_t cx, uint32_t cy);
 static void draw_matte_composite(struct lottie_transition *lt, gs_texture_t *scene_a,
-				 gs_texture_t *scene_b, gs_texture_t *matte,
-				 uint32_t cx, uint32_t cy);
+				 gs_texture_t *scene_b, gs_texture_t *browser_matte,
+				 gs_texture_t *matte_a, gs_texture_t *matte_b,
+				 bool use_native_mattes, uint32_t cx, uint32_t cy);
 
 static void lt_detect_matte_layers(struct lottie_transition *lt)
 {
@@ -652,8 +653,9 @@ static bool lt_collect_texture_metrics(gs_texture_t *texture, uint32_t cx, uint3
 }
 
 static void draw_matte_composite(struct lottie_transition *lt, gs_texture_t *scene_a,
-				 gs_texture_t *scene_b, gs_texture_t *matte,
-				 uint32_t cx, uint32_t cy)
+				 gs_texture_t *scene_b, gs_texture_t *browser_matte,
+				 gs_texture_t *matte_a, gs_texture_t *matte_b,
+				 bool use_native_mattes, uint32_t cx, uint32_t cy)
 {
 	struct slot_transform slot_a = lt->transform_a;
 	struct slot_transform slot_b = lt->transform_b;
@@ -674,7 +676,11 @@ static void draw_matte_composite(struct lottie_transition *lt, gs_texture_t *sce
 
 	gs_effect_set_texture(lt->ep_scene_a, scene_a);
 	gs_effect_set_texture(lt->ep_scene_b, scene_b);
-	gs_effect_set_texture(lt->ep_browser_tex, matte);
+	gs_effect_set_texture(lt->ep_browser_tex,
+			      browser_matte ? browser_matte : scene_a);
+	gs_effect_set_texture(lt->ep_matte_a_tex, matte_a ? matte_a : scene_a);
+	gs_effect_set_texture(lt->ep_matte_b_tex, matte_b ? matte_b : scene_a);
+	gs_effect_set_bool(lt->ep_use_native_mattes, use_native_mattes);
 	gs_effect_set_bool(lt->ep_invert_matte, lt->invert_matte);
 	gs_effect_set_bool(lt->ep_has_matte_a, lt->has_matte_a);
 	gs_effect_set_bool(lt->ep_has_matte_b, lt->has_matte_b);
@@ -694,7 +700,7 @@ static void draw_matte_composite(struct lottie_transition *lt, gs_texture_t *sce
 	gs_technique_t *tech = gs_effect_get_technique(lt->effect, "MatteComposite");
 	gs_technique_begin(tech);
 	gs_technique_begin_pass(tech, 0);
-	gs_draw_sprite(matte, 0, cx, cy);
+	gs_draw_sprite(scene_a, 0, cx, cy);
 	gs_technique_end_pass(tech);
 	gs_technique_end(tech);
 }
@@ -702,30 +708,40 @@ static void draw_matte_composite(struct lottie_transition *lt, gs_texture_t *sce
 static void render_and_optionally_capture_composite(struct lottie_transition *lt,
 						    gs_texture_t *scene_a,
 						    gs_texture_t *scene_b,
-						    gs_texture_t *matte,
+						    gs_texture_t *browser_matte,
+						    gs_texture_t *matte_a,
+						    gs_texture_t *matte_b,
+						    bool use_native_mattes,
 						    uint32_t cx, uint32_t cy,
 						    float t)
 {
-	if (!lt->e2e_enabled || !matte) {
-		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+	gs_texture_t *metric_matte = browser_matte ? browser_matte :
+		(matte_a ? matte_a : matte_b);
+
+	if (!lt->e2e_enabled) {
+		draw_matte_composite(lt, scene_a, scene_b, browser_matte, matte_a,
+				     matte_b, use_native_mattes, cx, cy);
 		return;
 	}
 
 	int sample_bucket = -1;
 	if (!lt_e2e_should_sample(lt, t, &sample_bucket)) {
-		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+		draw_matte_composite(lt, scene_a, scene_b, browser_matte, matte_a,
+				     matte_b, use_native_mattes, cx, cy);
 		return;
 	}
 
 	gs_texrender_t *capture = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	if (!capture) {
-		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+		draw_matte_composite(lt, scene_a, scene_b, browser_matte, matte_a,
+				     matte_b, use_native_mattes, cx, cy);
 		return;
 	}
 
 	if (!gs_texrender_begin(capture, cx, cy)) {
 		gs_texrender_destroy(capture);
-		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+		draw_matte_composite(lt, scene_a, scene_b, browser_matte, matte_a,
+				     matte_b, use_native_mattes, cx, cy);
 		return;
 	}
 
@@ -735,7 +751,8 @@ static void render_and_optionally_capture_composite(struct lottie_transition *lt
 		struct lt_texture_metrics matte_metrics = {0};
 		bool got_a = lt_collect_texture_metrics(scene_a, cx, cy, &scene_a_metrics);
 		bool got_b = lt_collect_texture_metrics(scene_b, cx, cy, &scene_b_metrics);
-		bool got_m = lt_collect_texture_metrics(matte, cx, cy, &matte_metrics);
+		bool got_m = metric_matte &&
+			lt_collect_texture_metrics(metric_matte, cx, cy, &matte_metrics);
 		if (got_a || got_b || got_m) {
 			struct dstr extra = {0};
 			dstr_catf(&extra, "\"bucket_percent\":%d", sample_bucket);
@@ -771,7 +788,8 @@ static void render_and_optionally_capture_composite(struct lottie_transition *lt
 	struct vec4 clear_color;
 	vec4_zero(&clear_color);
 	gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
-	draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+	draw_matte_composite(lt, scene_a, scene_b, browser_matte, matte_a,
+			     matte_b, use_native_mattes, cx, cy);
 	gs_texrender_end(capture);
 
 	gs_texture_t *capture_texture = gs_texrender_get_texture(capture);
@@ -779,7 +797,8 @@ static void render_and_optionally_capture_composite(struct lottie_transition *lt
 		lt_e2e_capture_sample(lt, capture_texture, cx, cy, sample_bucket);
 		draw_texture_direct(capture_texture, cx, cy);
 	} else {
-		draw_matte_composite(lt, scene_a, scene_b, matte, cx, cy);
+		draw_matte_composite(lt, scene_a, scene_b, browser_matte, matte_a,
+				     matte_b, use_native_mattes, cx, cy);
 	}
 
 	gs_texrender_destroy(capture);
@@ -1248,6 +1267,10 @@ static void *lt_create(obs_data_t *settings, obs_source_t *source)
 		lt->ep_scene_a = gs_effect_get_param_by_name(lt->effect, "scene_a");
 		lt->ep_scene_b = gs_effect_get_param_by_name(lt->effect, "scene_b");
 		lt->ep_browser_tex = gs_effect_get_param_by_name(lt->effect, "browser_tex");
+		lt->ep_matte_a_tex = gs_effect_get_param_by_name(lt->effect, "matte_a_tex");
+		lt->ep_matte_b_tex = gs_effect_get_param_by_name(lt->effect, "matte_b_tex");
+		lt->ep_use_native_mattes =
+			gs_effect_get_param_by_name(lt->effect, "use_native_mattes");
 		lt->ep_invert_matte = gs_effect_get_param_by_name(lt->effect, "invert_matte");
 		lt->ep_has_matte_a = gs_effect_get_param_by_name(lt->effect, "has_matte_a");
 		lt->ep_has_matte_b = gs_effect_get_param_by_name(lt->effect, "has_matte_b");
@@ -1497,11 +1520,14 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 
 	if (lt->effective_backend == LT_BACKEND_THORVG) {
 		struct lt_thorvg_render_stats thorvg_stats = {0};
+		gs_texture_t *matte_a;
+		gs_texture_t *matte_b;
 		uint64_t composite_start_ns;
 		uint64_t callback_end_ns;
-		gs_texture_t *thorvg_texture =
-			lt_thorvg_render(lt->thorvg_backend, t, &thorvg_stats);
-		if (!thorvg_texture || !a || !b || !lt->effect) {
+		lt_thorvg_render(lt->thorvg_backend, t, &thorvg_stats);
+		matte_a = lt_thorvg_get_matte_a_texture(lt->thorvg_backend);
+		matte_b = lt_thorvg_get_matte_b_texture(lt->thorvg_backend);
+		if (!a || !b || !lt->effect) {
 			if (lt->render_count <= 3)
 				blog(LOG_INFO, TAG "render #%d: NO THORVG/EFFECT", lt->render_count);
 			return;
@@ -1518,7 +1544,8 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 
 		composite_start_ns = os_gettime_ns();
 		render_and_optionally_capture_composite(lt, a, b,
-							thorvg_texture, cx, cy, t);
+							NULL, matte_a, matte_b, true,
+							cx, cy, t);
 		callback_end_ns = os_gettime_ns();
 		lt_e2e_record_render_perf(lt, callback_start_ns,
 					  callback_end_ns - callback_start_ns,
@@ -1600,7 +1627,8 @@ static void lt_transition_video_callback(void *data, gs_texture_t *a,
 	 * browser_tex: R=matteA, G=matteB, B=unused, A=always 1 */
 	uint64_t composite_start_ns = os_gettime_ns();
 	render_and_optionally_capture_composite(lt, a, b,
-						browser_texture, cx, cy, t);
+						browser_texture, NULL, NULL, false,
+						cx, cy, t);
 	uint64_t callback_end_ns = os_gettime_ns();
 	lt_e2e_record_render_perf(lt, callback_start_ns,
 				  callback_end_ns - callback_start_ns,

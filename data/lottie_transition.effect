@@ -2,6 +2,9 @@ uniform float4x4 ViewProj;
 uniform texture2d scene_a;
 uniform texture2d scene_b;
 uniform texture2d browser_tex;
+uniform texture2d matte_a_tex;
+uniform texture2d matte_b_tex;
+uniform bool use_native_mattes;
 uniform bool invert_matte;
 uniform bool has_matte_a;
 uniform bool has_matte_b;
@@ -71,22 +74,39 @@ float4 SampleSceneB(float2 uv)
 	return sample * saturate(slot_b_rot_opacity.y);
 }
 
+float MatteCoverage(float4 sample)
+{
+	return max(sample.a, dot(sample.rgb, float3(0.299, 0.587, 0.114)));
+}
+
+void ResolveMattes(float2 uv, out float ma, out float mb, out float ready)
+{
+	if (use_native_mattes) {
+		ma = has_matte_a ? MatteCoverage(matte_a_tex.Sample(texSampler, uv)) : 0.0;
+		mb = has_matte_b ? MatteCoverage(matte_b_tex.Sample(texSampler, uv)) : 0.0;
+		ready = 1.0;
+		return;
+	}
+
+	float4 br = browser_tex.Sample(texSampler, uv);
+	ready = br.a;
+	ma = br.r;
+	mb = br.g;
+}
+
 float4 PSMatteComposite(VertData v_in) : TARGET
 {
 	float4 sa = SampleSceneA(v_in.uv);
 	float4 sb = SampleSceneB(v_in.uv);
-	float4 br = browser_tex.Sample(texSampler, v_in.uv);
+	float ma;
+	float mb;
+	float ready;
 
-	// Browser not ready yet (alpha=0) — show scene A to avoid flash
-	if (br.a < 0.5) {
+	ResolveMattes(v_in.uv, ma, mb, ready);
+
+	if (ready < 0.5) {
 		return sa;
 	}
-
-	// Channel-packed: R=matteA, G=matteB, B=unused, A=always 1
-	// matteA = how much scene A to show (white = full scene A)
-	// If matteB (G) is 0 (no [MatteB] layer), scene B = 1 - matteA
-	float ma = br.r;
-	float mb = br.g;
 
 	if (invert_matte) {
 		ma = 1.0 - ma;
@@ -123,14 +143,15 @@ float4 PSMatteOnly(VertData v_in) : TARGET
 {
 	float4 sa = SampleSceneA(v_in.uv);
 	float4 sb = SampleSceneB(v_in.uv);
-	float4 br = browser_tex.Sample(texSampler, v_in.uv);
+	float ma;
+	float mb;
+	float ready;
 
-	if (br.a < 0.5) {
+	ResolveMattes(v_in.uv, ma, mb, ready);
+
+	if (ready < 0.5) {
 		return sa;
 	}
-
-	float ma = br.r;
-	float mb = br.g;
 
 	if (invert_matte) {
 		ma = 1.0 - ma;
