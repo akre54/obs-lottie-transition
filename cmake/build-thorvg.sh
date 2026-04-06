@@ -76,18 +76,26 @@ setup_build() {
   local args=("${common_args[@]}")
   args[1]="$prefix_dir"
 
-  local meson_setup_args=()
-  if [ "$is_windows" -eq 1 ]; then
-    meson_setup_args+=("--vsenv")
-  fi
-
   if [ ! -d "$build_dir" ]; then
-    "$@" "$meson_bin" setup "${meson_setup_args[@]}" "$build_dir" "$src_dir" "${args[@]}"
+    if [ "$is_windows" -eq 1 ]; then
+      "$@" "$meson_bin" setup --vsenv "$build_dir" "$src_dir" "${args[@]}"
+    else
+      "$@" "$meson_bin" setup "$build_dir" "$src_dir" "${args[@]}"
+    fi
   else
-    "$@" "$meson_bin" setup "${meson_setup_args[@]}" --wipe "$build_dir" "$src_dir" "${args[@]}"
+    if [ "$is_windows" -eq 1 ]; then
+      "$@" "$meson_bin" setup --vsenv --wipe "$build_dir" "$src_dir" "${args[@]}"
+    else
+      "$@" "$meson_bin" setup --wipe "$build_dir" "$src_dir" "${args[@]}"
+    fi
   fi
 
-  "$@" "$ninja_bin" -C "$build_dir" install
+  if [ "$is_windows" -eq 1 ]; then
+    "$@" "$meson_bin" compile -C "$build_dir"
+    "$@" "$meson_bin" install -C "$build_dir"
+  else
+    "$@" "$ninja_bin" -C "$build_dir" install
+  fi
 }
 
 if [ "$uname_s" = "Darwin" ]; then

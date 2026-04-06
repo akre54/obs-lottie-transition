@@ -211,11 +211,13 @@ jobs:
           }
 
           if ($LASTEXITCODE -ne 0) { throw "Meson setup failed" }
-          & $ninja -C $build install
-          if ($LASTEXITCODE -ne 0) { throw "Ninja install failed" }
+          & $meson compile -C $build
+          if ($LASTEXITCODE -ne 0) { throw "Meson compile failed" }
+          & $meson install -C $build
+          if ($LASTEXITCODE -ne 0) { throw "Meson install failed" }
 
       - name: Save ThorVG build products cache
-        if: always() && steps.windows-thorvg-cache.outputs.cache-hit != 'true'
+        if: steps.windows-thorvg-cache.outputs.cache-hit != 'true' && success()
         uses: actions/cache/save@v4
         with:
           path: |
