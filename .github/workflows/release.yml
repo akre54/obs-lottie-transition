@@ -25,7 +25,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Install ThorVG build tools
-        run: python3 -m pip install --user meson ninja
+        run: brew install meson ninja
 
       - name: Fetch pinned ThorVG source
         run: |
