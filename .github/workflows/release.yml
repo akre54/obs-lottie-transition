@@ -115,14 +115,16 @@ jobs:
           cache: pip
           cache-dependency-path: .github/workflows/release.yml
 
-      - name: Cache OBS dependencies
-        uses: actions/cache@v4
+      - name: Restore OBS dependencies cache
+        id: windows-obs-cache
+        uses: actions/cache/restore@v4
         with:
           path: .deps
           key: windows-release-deps-${{ hashFiles('buildspec.json', 'cmake/common/buildspec_common.cmake', 'cmake/windows/buildspec.cmake') }}
 
-      - name: Cache ThorVG build products
-        uses: actions/cache@v4
+      - name: Restore ThorVG build products cache
+        id: windows-thorvg-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             vendor/thorvg-install
@@ -159,6 +161,13 @@ jobs:
 
       - name: Configure Windows build
         run: cmake --preset windows-x64
+
+      - name: Save OBS dependencies cache
+        if: always() && steps.windows-obs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .deps
+          key: windows-release-deps-${{ hashFiles('buildspec.json', 'cmake/common/buildspec_common.cmake', 'cmake/windows/buildspec.cmake') }}
 
       - name: Build vendored ThorVG
         shell: pwsh
@@ -204,6 +213,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Meson setup failed" }
           & $ninja -C $build install
           if ($LASTEXITCODE -ne 0) { throw "Ninja install failed" }
+
+      - name: Save ThorVG build products cache
+        if: always() && steps.windows-thorvg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            vendor/thorvg-install
+            vendor/thorvg/builddir
+          key: windows-thorvg-v2-${{ env.THORVG_REF }}-${{ hashFiles('cmake/build-thorvg.sh', '.github/workflows/release.yml') }}
 
       - name: Build Windows plugin
         run: cmake --build --preset windows-x64 --target obs-lottie-transition
