@@ -34,11 +34,35 @@ jobs:
           cache: pip
           cache-dependency-path: .github/workflows/release.yml
 
+      - name: Compute macOS dependency cache key
+        id: macos-deps-key
+        run: |
+          python3 - <<'PY' > .deps-key
+          import hashlib
+          import json
+          from pathlib import Path
+
+          buildspec = json.loads(Path("buildspec.json").read_text(encoding="utf-8"))
+          payload = {
+              "dependencies": buildspec.get("dependencies", {}),
+              "common_buildspec": Path("cmake/common/buildspec_common.cmake").read_text(encoding="utf-8"),
+              "platform_buildspec": Path("cmake/macos/buildspec.cmake").read_text(encoding="utf-8"),
+          }
+          digest = hashlib.sha256(
+              json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+          ).hexdigest()
+          print(digest)
+          PY
+          echo "deps_key=$(cat .deps-key)" >> "$GITHUB_OUTPUT"
+          rm -f .deps-key
+
       - name: Cache OBS dependencies
         uses: actions/cache@v4
         with:
           path: .deps
-          key: macos-release-deps-${{ hashFiles('buildspec.json', 'cmake/common/buildspec_common.cmake', 'cmake/macos/buildspec.cmake') }}
+          key: macos-release-deps-${{ steps.macos-deps-key.outputs.deps_key }}
+          restore-keys: |
+            macos-release-deps-
 
       - name: Cache ThorVG build products
         uses: actions/cache@v4
@@ -115,12 +139,37 @@ jobs:
           cache: pip
           cache-dependency-path: .github/workflows/release.yml
 
+      - name: Compute Windows dependency cache key
+        id: windows-deps-key
+        shell: pwsh
+        run: |
+          $script = @'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          buildspec = json.loads(Path("buildspec.json").read_text(encoding="utf-8"))
+          payload = {
+              "dependencies": buildspec.get("dependencies", {}),
+              "common_buildspec": Path("cmake/common/buildspec_common.cmake").read_text(encoding="utf-8"),
+              "platform_buildspec": Path("cmake/windows/buildspec.cmake").read_text(encoding="utf-8"),
+          }
+          digest = hashlib.sha256(
+              json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+          ).hexdigest()
+          print(f"deps_key={digest}")
+          '@
+          $value = python -c $script
+          $value | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Restore OBS dependencies cache
         id: windows-obs-cache
         uses: actions/cache/restore@v4
         with:
           path: .deps
-          key: windows-release-deps-${{ hashFiles('buildspec.json', 'cmake/common/buildspec_common.cmake', 'cmake/windows/buildspec.cmake') }}
+          key: windows-release-deps-${{ steps.windows-deps-key.outputs.deps_key }}
+          restore-keys: |
+            windows-release-deps-
 
       - name: Restore ThorVG build products cache
         id: windows-thorvg-cache
@@ -167,7 +216,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .deps
-          key: windows-release-deps-${{ hashFiles('buildspec.json', 'cmake/common/buildspec_common.cmake', 'cmake/windows/buildspec.cmake') }}
+          key: windows-release-deps-${{ steps.windows-deps-key.outputs.deps_key }}
 
       - name: Build vendored ThorVG
         shell: pwsh
