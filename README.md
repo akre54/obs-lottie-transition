@@ -139,4 +139,4 @@ These runs emit:
 
 ## License
 
-This repository is licensed under the Apache License 2.0. See [`LICENSE`](LICENSE).
+This repository is dual-licensed under Apache 2.0 or GPL-2.0-or-later, at your option. See [`LICENSE`](LICENSE), [`LICENSE.Apache-2.0`](LICENSE.Apache-2.0), and [`LICENSE.GPL-2.0-or-later`](LICENSE.GPL-2.0-or-later).
