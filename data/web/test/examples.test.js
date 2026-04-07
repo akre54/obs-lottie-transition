@@ -86,6 +86,46 @@ test('diagonal-band example stays a single incoming matte without overlay layers
   assert.deepEqual(layerNames(plan.overlay), []);
 });
 
+test('credit-card-shuffle-lf keeps a single incoming matte plus decorative source art', () => {
+  const json = readExample('credit-card-shuffle-lf.json');
+  const plan = BackendPlan.buildLayerPlan(json, 'browser');
+
+  assert.deepEqual(layerNames(plan.matteA), ['[MatteA]', '[SlotA]', '[SlotB]']);
+  assert.deepEqual(layerNames(plan.matteB), ['[MatteB]']);
+  assert.ok(layerNames(plan.overlay).includes('overlay-root'));
+});
+
+test('circle-transition-lf stays a center-first reveal with preserved overlay art', () => {
+  const json = readExample('circle-transition-lf.json');
+  const plan = BackendPlan.buildLayerPlan(json, 'browser');
+
+  assert.deepEqual(layerNames(plan.matteA), ['[SlotA]', '[SlotB]']);
+  assert.deepEqual(layerNames(plan.matteB), ['[MatteB]']);
+  assert.ok(layerNames(plan.overlay).includes('src-Mask'));
+  assert.ok(layerNames(plan.overlay).includes('src-Circle_Shapes'));
+});
+
+test('menu-page-transition-lf keeps a single incoming matte and source overlay stack', () => {
+  const json = readExample('menu-page-transition-lf.json');
+  const plan = BackendPlan.buildLayerPlan(json, 'browser');
+
+  assert.deepEqual(layerNames(plan.matteA), ['[SlotA]', '[SlotB]']);
+  assert.deepEqual(layerNames(plan.matteB), ['[MatteB]', '[MatteB]', '[MatteB]']);
+  assert.ok(layerNames(plan.overlay).includes('overlay-root'));
+  assert.ok(layerNames(plan.overlay).includes('src-light_blue_shape'));
+});
+
+test('ibm-exploration-01-lf keeps a single incoming matte built from multiple rect groups', () => {
+  const json = readExample('ibm-exploration-01-lf.json');
+  const plan = BackendPlan.buildLayerPlan(json, 'browser');
+  const matteNames = layerNames(plan.matteB);
+
+  assert.deepEqual(layerNames(plan.matteA), ['[SlotA]', '[SlotB]']);
+  assert.equal(matteNames.length, 1);
+  assert.ok(matteNames.every((name) => name === '[MatteB]'));
+  assert.deepEqual(layerNames(plan.overlay), []);
+});
+
 test('JS transform strip encoding stays compatible with native decoder', () => {
   const decoder = process.env.TRANSFORM_DECODE_CLI;
 

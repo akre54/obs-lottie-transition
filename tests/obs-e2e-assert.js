@@ -211,6 +211,110 @@ function applyBehaviorChecks(summary, events, options, errors) {
       }
     }
   }
+
+  if (exampleName === 'credit-card-shuffle-lf.json') {
+    for (const [triggerIndex, samples] of triggers.entries()) {
+      const early = samples.find((event) => event.bucket_percent === 25);
+      const middle = samples.find((event) => event.bucket_percent === 50);
+      const end = samples.find((event) => event.bucket_percent === 100);
+      const earlyCenter = early?.sample_center;
+      const earlyLeft = early?.sample_left_mid;
+      const earlyRight = early?.sample_right_mid;
+      const middleCenter = middle?.sample_center;
+      const endCenter = end?.sample_center;
+
+      if (!dominant(earlyCenter, 'b', 80, 30) ||
+          !dominant(earlyLeft, 'r', 120, 40) ||
+          !dominant(earlyRight, 'r', 120, 40)) {
+        errors.push(`Trigger ${triggerIndex} did not keep the card-shuffle reveal concentrated near the center early`);
+      }
+      if (!dominant(middleCenter, 'b', 140, 60) || !dominant(endCenter, 'b', 180, 60)) {
+        errors.push(`Trigger ${triggerIndex} did not carry the incoming scene through the center of credit-card-shuffle`);
+      }
+    }
+  }
+
+  if (exampleName === 'circle-transition-lf.json') {
+    for (const [triggerIndex, samples] of triggers.entries()) {
+      const early = samples.find((event) => event.bucket_percent === 25);
+      const middle = samples.find((event) => event.bucket_percent === 50);
+      const earlyCenter = early?.sample_center;
+      const earlyLeft = early?.sample_left_mid;
+      const earlyRight = early?.sample_right_mid;
+      const middleCenter = middle?.sample_center;
+      const middleLeft = middle?.sample_left_mid;
+      const middleRight = middle?.sample_right_mid;
+
+      if (!dominant(earlyCenter, 'b', 80, 30) ||
+          !dominant(earlyLeft, 'r', 120, 40) ||
+          !dominant(earlyRight, 'r', 120, 40)) {
+        errors.push(`Trigger ${triggerIndex} did not start circle-transition-lf as a center-first reveal`);
+      }
+      if (!dominant(middleCenter, 'b', 140, 60) ||
+          !dominant(middleLeft, 'b', 140, 60) ||
+          !dominant(middleRight, 'b', 140, 60)) {
+        errors.push(`Trigger ${triggerIndex} midpoint did not bring the incoming scene into the circle-transition center`);
+      }
+    }
+  }
+
+  if (exampleName === 'menu-page-transition-lf.json') {
+    for (const [triggerIndex, samples] of triggers.entries()) {
+      const early = samples.find((event) => event.bucket_percent === 25);
+      const middle = samples.find((event) => event.bucket_percent === 50);
+      const end = samples.find((event) => event.bucket_percent === 100);
+      const earlyCenter = early?.sample_center;
+      const earlyRight = early?.sample_right_mid;
+      const middleCenter = middle?.sample_center;
+      const middleRight = middle?.sample_right_mid;
+      const endCenter = end?.sample_center;
+
+      if (!dominant(earlyCenter, 'r', 120, 40) || !dominant(earlyRight, 'b', 90, 30)) {
+        errors.push(`Trigger ${triggerIndex} did not start menu-page-transition-lf with the page reveal entering from the right`);
+      }
+      if (!dominant(middleCenter, 'b', 140, 60) || !dominant(middleRight, 'b', 140, 60)) {
+        errors.push(`Trigger ${triggerIndex} did not carry the page reveal through the sampled region at midpoint`);
+      }
+      if (!dominant(endCenter, 'b', 180, 60)) {
+        errors.push(`Trigger ${triggerIndex} did not finish menu-page-transition-lf with the incoming scene established`);
+      }
+    }
+  }
+
+  if (exampleName === 'ibm-exploration-01-lf.json') {
+    for (const [triggerIndex, samples] of triggers.entries()) {
+      const early = samples.find((event) => event.bucket_percent === 25);
+      const middle = samples.find((event) => event.bucket_percent === 50);
+      const end = samples.find((event) => event.bucket_percent === 100);
+      const earlyCenter = early?.sample_center;
+      const middleCenter = middle?.sample_center;
+      const middleCornerNear = middle?.sample_edge_25;
+      const middleCornerFar = middle?.sample_edge_75;
+      const endLeft = end?.sample_left_mid;
+      const endCenter = end?.sample_center;
+      const endRight = end?.sample_right_mid;
+
+      if (!dominant(earlyCenter, 'b', 120, 40)) {
+        errors.push(`Trigger ${triggerIndex} did not establish the IBM center-first reveal early enough`);
+      }
+      if (!dominant(early?.sample_left_mid, 'r', 120, 40) ||
+          !dominant(early?.sample_right_mid, 'r', 120, 40)) {
+        errors.push(`Trigger ${triggerIndex} did not keep the IBM side panels closed while the center opened`);
+      }
+      if (!dominant(middleCenter, 'b', 140, 60)) {
+        errors.push(`Trigger ${triggerIndex} did not show the IBM panel reveal establishing the center by midpoint`);
+      }
+      if (!dominant(middleCornerNear, 'r', 120, 40) &&
+          !dominant(middleCornerFar, 'r', 120, 40)) {
+        errors.push(`Trigger ${triggerIndex} did not keep any IBM stagger in the corner samples at midpoint`);
+      }
+      if (!dominant(endLeft, 'b', 180, 60) ||
+          !dominant(endCenter, 'b', 180, 60) ||
+          !dominant(endRight, 'b', 180, 60)) {
+        errors.push(`Trigger ${triggerIndex} did not finish IBM exploration with the incoming scene established`);
+      }
+    }
+  }
 }
 
 function summarizePerfEvents(events) {
@@ -377,6 +481,7 @@ function summarizeRun(artifactDir, options = {}) {
     visualChecks &&
     options.behaviorChecks &&
     (exampleName === 'simple-wipe.json' ||
+      exampleName === 'credit-card-shuffle-lf.json' ||
       exampleName === 'circle-reveal.json' ||
       exampleName === 'sliding-window.json' ||
       exampleName === 'spotlight-zoom.json' ||

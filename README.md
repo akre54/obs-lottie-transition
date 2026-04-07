@@ -20,7 +20,7 @@ The plugin looks for these reserved layer names inside a Lottie JSON:
 
 Any other layer is treated as decorative overlay content.
 
-Example files live in [examples/sliding-window.json](/Users/adam/Projects/obs-lottie-transition/examples/sliding-window.json), [examples/spotlight-zoom.json](/Users/adam/Projects/obs-lottie-transition/examples/spotlight-zoom.json), [examples/diagonal-band.json](/Users/adam/Projects/obs-lottie-transition/examples/diagonal-band.json), [examples/slide-and-mask.json](/Users/adam/Projects/obs-lottie-transition/examples/slide-and-mask.json), [examples/simple-wipe.json](/Users/adam/Projects/obs-lottie-transition/examples/simple-wipe.json), and [examples/circle-reveal.json](/Users/adam/Projects/obs-lottie-transition/examples/circle-reveal.json).
+Example files live in the [`examples/`](examples/) directory.
 
 ## Build
 
@@ -37,7 +37,7 @@ The plugin bundle is produced at:
 build_macos/RelWithDebInfo/obs-lottie-transition.plugin
 ```
 
-ThorVG is built from the vendored source automatically when `ENABLE_THORVG` is on in [CMakeLists.txt](/Users/adam/Projects/obs-lottie-transition/CMakeLists.txt).
+ThorVG is built from the vendored source automatically when `ENABLE_THORVG` is on in [`CMakeLists.txt`](CMakeLists.txt).
 
 ## Install
 
@@ -65,7 +65,9 @@ The default backend is `thorvg`.
 
 ## Authoring Notes
 
-The authoring guide is in [examples/AUTHORING-GUIDE.md](/Users/adam/Projects/obs-lottie-transition/examples/AUTHORING-GUIDE.md).
+The authoring guide is in [`examples/AUTHORING-GUIDE.md`](examples/AUTHORING-GUIDE.md).
+
+Example credits and adaptation notes are in [`examples/CREDITS.md`](examples/CREDITS.md).
 
 The short version:
 
@@ -91,7 +93,7 @@ node --test data/web/test/bridge-core.test.js data/web/test/examples.test.js
 
 ## OBS E2E
 
-The live OBS harness is documented in [tests/OBS_E2E.md](/Users/adam/Projects/obs-lottie-transition/tests/OBS_E2E.md).
+The live OBS harness is documented in [`tests/OBS_E2E.md`](tests/OBS_E2E.md).
 
 Single run:
 
@@ -137,4 +139,4 @@ These runs emit:
 
 ## License
 
-This repository is licensed under the Apache License 2.0. See [LICENSE](/Users/adam/Projects/obs-lottie-transition/LICENSE).
+This repository is licensed under the Apache License 2.0. See [`LICENSE`](LICENSE).

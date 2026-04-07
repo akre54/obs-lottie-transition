@@ -41,6 +41,30 @@ const CASES = [
     backend: 'thorvg',
     fixture: 'solid',
   },
+  {
+    name: 'credit-card-shuffle-lf-center-reveal',
+    example: 'examples/credit-card-shuffle-lf.json',
+    backend: 'thorvg',
+    fixture: 'solid',
+  },
+  {
+    name: 'circle-transition-lf-center-reveal',
+    example: 'examples/circle-transition-lf.json',
+    backend: 'thorvg',
+    fixture: 'solid',
+  },
+  {
+    name: 'menu-page-transition-lf-page-reveal',
+    example: 'examples/menu-page-transition-lf.json',
+    backend: 'thorvg',
+    fixture: 'solid',
+  },
+  {
+    name: 'ibm-exploration-01-lf-panel-reveal',
+    example: 'examples/ibm-exploration-01-lf.json',
+    backend: 'thorvg',
+    fixture: 'solid',
+  },
 ];
 
 function parseArgs(argv) {
